@@ -24,8 +24,10 @@ def vec_betaln(a, b):
 
 
 # Implement scipy-cython betainc as JIT
+# betainc_addr = nb.extending.get_cython_function_address(
+#     "scipy.special.cython_special", "betainc")
 betainc_addr = nb.extending.get_cython_function_address(
-    "scipy.special.cython_special", "betainc")
+    "scipy.special.cython_special", "__pyx_fuse_0betainc")
 betainc_functype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double,
                                     ctypes.c_double, ctypes.c_double)
 betainc_fn = betainc_functype(betainc_addr)
