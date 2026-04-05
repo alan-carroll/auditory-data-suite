@@ -19,8 +19,7 @@ from kivy.uix.label import Label
 from kivy.uix.checkbox import CheckBox
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
-from shapely.geometry import Point
-from shapely.geometry.polygon import Polygon
+from matplotlib.path import Path as MplPath
 import pandas as pd
 import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
@@ -1641,10 +1640,8 @@ class MapLayout(FloatLayout):
         if touch.is_double_tap:
             for line_ in self.parent.parent.vor_lines.values():
                 poly_points = line_.line.points
-                poly_x = poly_points[0:][::2]
-                poly_y = poly_points[1:][::2]
-                shapely_poly = Polygon(zip(poly_x, poly_y))
-                if shapely_poly.contains(Point(touch.x, touch.y)):
+                poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
+                if MplPath(poly_xy).contains_point((touch.x, touch.y)):
                     # If event occurred over a site, pull up that site's 
                     # detailed plot
                     num = line_.site_number
@@ -1707,9 +1704,8 @@ class MapLayout(FloatLayout):
               (self.parent.parent.show_figure_toggle.state == "down") or 
               (self.parent.parent.hide_figure_toggle.state == "down")):
             try:
-                selection_points = [Point(x, y) for x, y in zip(
-                    touch.ud["line"].points[0:][::2],
-                    touch.ud["line"].points[1:][::2])]
+                stroke = touch.ud["line"].points
+                selection_points = list(zip(stroke[0::2], stroke[1::2]))
             except KeyError:
                 # Error sometimes thrown when program tries to interpret a line
                 # drawn over other GUI elements
@@ -1718,10 +1714,9 @@ class MapLayout(FloatLayout):
 
             for line_ in self.parent.parent.vor_lines.values():
                 poly_points = line_.line.points
-                poly_x = poly_points[0:][::2]
-                poly_y = poly_points[1:][::2]
-                shapely_poly = Polygon(zip(poly_x, poly_y))
-                if list(filter(shapely_poly.contains, selection_points)):
+                poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
+                # Vectorized hit-test across every point in the user's stroke.
+                if MplPath(poly_xy).contains_points(selection_points).any():
                     site_num = line_.site_number
                     # Check if cell is currently interactive or hidden. 
                     # If hidden, move on
