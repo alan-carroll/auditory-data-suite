@@ -21,8 +21,7 @@ from kivy.uix.label import Label
 from kivy.uix.checkbox import CheckBox
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
-from shapely.geometry import Point
-from shapely.geometry.polygon import Polygon
+from matplotlib.path import Path as MplPath
 import pandas as pd
 import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
@@ -1629,26 +1628,20 @@ class FieldSelectionGUI(BoxLayout):
 class MapLayout(FloatLayout):
     def on_touch_down(self, touch):
         """
-        First checks if double-tap: If yes, check if over a map site, and pull 
-        up the respective details screen.
-        Checks by building a polygon for each site using current line points 
-        and shapely to check if mouse touch fell in any of them. Must be done 
-        on the fly to accommodate zoom in/out capabilities.
-        If not a double-click or outside of site polygons:
-        Checks if Select/Deselect A1 is toggled: If yes, and user is not 
-        scrolling (based on mouse-move delay), then draw a red line following 
-        user's mouse. 
-        If no, let GUI process input normally (Kivy handles event).
+        Double-tap on a voronoi cell opens that site's detail screen.
+
+        Otherwise: if a paint toggle is active, start a red stroke that
+        on_touch_up will resolve into cell selections. If no paint toggle is
+        active, defer to FloatLayout so the ScrollView can handle panning.
+
+        Hit-testing rebuilds each polygon from its current Kivy Line points
+        every time, since zoom rescales absolute coordinates.
         """
         if touch.is_double_tap:
             for line_ in self.parent.parent.vor_lines.values():
                 poly_points = line_.line.points
-                poly_x = poly_points[0:][::2]
-                poly_y = poly_points[1:][::2]
-                shapely_poly = Polygon(zip(poly_x, poly_y))
-                if shapely_poly.contains(Point(touch.x, touch.y)):
-                    # If event occurred over a site, pull up that site's 
-                    # detailed plot
+                poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
+                if MplPath(poly_xy).contains_point((touch.x, touch.y)):
                     num = line_.site_number
                     screen_manager = self.parent.parent.parent.manager
                     screen_manager.switch_to(
@@ -1685,15 +1678,14 @@ class MapLayout(FloatLayout):
 
     def on_touch_up(self, touch):
         """
-        on_touch_up handles three user interaction cases:
-        1) For some reason, Kivy handles mouse scrolling as on_touch_up events 
-            when using a ScrollView.
-            Mouse scrolling scales the view up or down, respectively
-        2) If Select/Deselect A1 is toggled and user was drawing a line: Gather
-            the points, check for any that fall within Voronoi cells, and 
-            update A1 selection accordingly. Mesh colors are also updated to 
-            reflect selections. Finally, delete the line the user drew.
-        3) None of the above. Kivy handles the touch internally
+        Three paths:
+
+        1. Mouse-wheel → zoom. Kivy delivers wheel events to ScrollView
+           children as touch_up, which is why zoom lives here rather than
+           on MapScroll.
+        2. Paint stroke finished → hit-test the stroke against every cell
+           and apply the active toggle's action to each cell touched.
+        3. Neither → let Kivy handle it.
         """
         if touch.is_mouse_scrolling:
             h = self.height
@@ -1709,9 +1701,8 @@ class MapLayout(FloatLayout):
               (self.parent.parent.show_figure_toggle.state == "down") or 
               (self.parent.parent.hide_figure_toggle.state == "down")):
             try:
-                selection_points = [Point(x, y) for x, y in zip(
-                    touch.ud["line"].points[0:][::2],
-                    touch.ud["line"].points[1:][::2])]
+                stroke = touch.ud["line"].points
+                selection_points = list(zip(stroke[0::2], stroke[1::2]))
             except KeyError:
                 # Error sometimes thrown when program tries to interpret a line
                 # drawn over other GUI elements
@@ -1720,10 +1711,9 @@ class MapLayout(FloatLayout):
 
             for line_ in self.parent.parent.vor_lines.values():
                 poly_points = line_.line.points
-                poly_x = poly_points[0:][::2]
-                poly_y = poly_points[1:][::2]
-                shapely_poly = Polygon(zip(poly_x, poly_y))
-                if list(filter(shapely_poly.contains, selection_points)):
+                poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
+                # Vectorized hit-test across every point in the user's stroke.
+                if MplPath(poly_xy).contains_points(selection_points).any():
                     site_num = line_.site_number
                     # Check if cell is currently interactive or hidden. 
                     # If hidden, move on
