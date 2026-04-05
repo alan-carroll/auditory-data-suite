@@ -7,7 +7,9 @@ from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
 import matplotlib.pyplot as plt
-from kivy.garden.matplotlib.backend_kivyagg import FigureCanvas
+# Pip-installable replacement for the legacy `garden install matplotlib` flower.
+# Aliased so the rest of the module doesn't need to change.
+from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg as FigureCanvas
 from kivy.uix.scrollview import ScrollView
 from kivy.core.window import Window
 from kivy.uix.button import Button
