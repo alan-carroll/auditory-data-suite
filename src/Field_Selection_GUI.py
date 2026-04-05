@@ -831,6 +831,33 @@ class FieldSelectionGUI(BoxLayout):
         self.add_widget(self.scroll)
         self.add_widget(self.plot_tools_layout)
 
+    @property
+    def paint_mode_active(self):
+        """
+        True when any of the stroke-painting toggles is engaged.
+
+        These four toggles share Kivy group "paint", so at most one is down
+        at a time — this property is just the "is the group active at all"
+        check that gates whether MapLayout consumes touch events for painting
+        vs. letting them fall through to the ScrollView for panning.
+        """
+        return any(t.state == "down" for t in (
+            self.toggle,
+            self.deselect_toggle,
+            self.show_figure_toggle,
+            self.hide_figure_toggle,
+        ))
+
+    def open_site_screen(self, site_number):
+        """
+        Switch from the Map overview to the detailed analysis view for a site.
+
+        `self.parent` is the MapScreen that owns this layout, and
+        `Screen.manager` is a documented Kivy property — so this is one
+        stable hop, not a fragile chain.
+        """
+        self.parent.manager.switch_to(self.site_screens[site_number])
+
     def on_cf_colormap(self, _spinner, value):
         """Update bubble plot CF colormap using new selection."""
         for plot in self.plot_dict.values():
