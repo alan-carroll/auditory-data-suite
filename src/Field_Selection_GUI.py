@@ -1842,7 +1842,7 @@ class SitePlot(RelativeLayout):
         self.site_analysis = self.gui_instance.densetc_analysis[self.site_number]
 
         # Allow user to change cmaps used for plots
-        self.cf_cmap = matplotlib.cm.get_cmap(kwargs["cf_cmap"])
+        self.cf_cmap = matplotlib.colormaps[kwargs["cf_cmap"]]
         self.heatmap_cmap = kwargs["heatmap_cmap"]
         # TODO test 48khz
         self.norm = matplotlib.colors.Normalize(
@@ -2068,7 +2068,7 @@ class SitePlot(RelativeLayout):
     def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
         """Update bubble plot or heatmap colors."""
         self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = matplotlib.cm.get_cmap(cf_cmap)
+        self.cf_cmap = matplotlib.colormaps[cf_cmap]
         if self.cf_idx is not None:
             # TODO allow user to change No CF color (default is red)
             self.bubble_color = self.cf_cmap(self.norm(self.cf_idx))
@@ -2117,8 +2117,8 @@ class SitePlot(RelativeLayout):
 
         # TODO generalize sweep length
         if self.onset_press and (0 <= xdata <= 400):
-            if np.any(xdata < self.offset_line.get_xdata()):
-                self.onset_line.set_xdata(xdata)
+            if xdata < self.offset_line.get_xdata()[0]:
+                self.onset_line.set_xdata([xdata, xdata])
                 self.onset = int(round(xdata))
                 if self.detailed_plot:
                     self.on_changes_signal.send()
@@ -2144,8 +2144,8 @@ class SitePlot(RelativeLayout):
 
         # TODO generalize sweep length
         elif self.offset_press and (0 <= xdata <= 400):
-            if np.any(xdata > self.onset_line.get_xdata()):
-                self.offset_line.set_xdata(xdata)
+            if xdata > self.onset_line.get_xdata()[0]:
+                self.offset_line.set_xdata([xdata, xdata])
                 self.offset = int(round(xdata))
                 if self.detailed_plot:
                     self.on_changes_signal.send()
@@ -2726,8 +2726,8 @@ class SitePlot(RelativeLayout):
             self.cf_marker = self.ax[1].plot(self.cf_idx, self.thresh_idx, 
                                              "r*", ms=8, alpha=0.5)[0]
         else:
-            self.cf_marker.set_xdata(self.cf_idx)
-            self.cf_marker.set_ydata(self.thresh_idx)
+            self.cf_marker.set_xdata([self.cf_idx])
+            self.cf_marker.set_ydata([self.thresh_idx])
         # Ensure all BWs are set correctly. If BW exceeds range, set to None. 
         # If setting new BW (was previously None, but now should exist with new
         # threshold), set to very wide default range across available frequency
@@ -2825,108 +2825,108 @@ class SitePlot(RelativeLayout):
             return
 
         if self.bw10_press[0]:
-            if xdata < self.bw10_markers[1].get_xdata():
+            if xdata < self.bw10_markers[1].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata >= 0:
                     # Limit BW to lowest frequency (index 0)
                     x = int(round(xdata))
                 else:
                     x = 0
-                self.bw10_markers[0].set_xdata(x)
+                self.bw10_markers[0].set_xdata([x])
                 self.bw10_idx[0] = x
                 self.bw10_line.set_xdata(self.bw10_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
         if self.bw10_press[1]:
-            if xdata > self.bw10_markers[0].get_xdata():
+            if xdata > self.bw10_markers[0].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata <= (self.gui_instance.num_frequency - 1):
                     # Limit BW to highest frequency (max index)
                     x = int(round(xdata))
                 else:
                     x = self.gui_instance.num_frequency - 1
-                self.bw10_markers[1].set_xdata(x)
+                self.bw10_markers[1].set_xdata([x])
                 self.bw10_idx[1] = x
                 self.bw10_line.set_xdata(self.bw10_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
 
         if self.bw20_press[0]:
-            if xdata < self.bw20_markers[1].get_xdata():
+            if xdata < self.bw20_markers[1].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata >= 0:
                     # Limit BW to lowest frequency (index 0)
                     x = int(round(xdata))
                 else:
                     x = 0
-                self.bw20_markers[0].set_xdata(x)
+                self.bw20_markers[0].set_xdata([x])
                 self.bw20_idx[0] = x
                 self.bw20_line.set_xdata(self.bw20_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
         if self.bw20_press[1]:
-            if xdata > self.bw20_markers[0].get_xdata():
+            if xdata > self.bw20_markers[0].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata <= (self.gui_instance.num_frequency - 1):
                     # Limit BW to highest frequency (max index)
                     x = int(round(xdata))
                 else:
                     x = self.gui_instance.num_frequency - 1
-                self.bw20_markers[1].set_xdata(x)
+                self.bw20_markers[1].set_xdata([x])
                 self.bw20_idx[1] = x
                 self.bw20_line.set_xdata(self.bw20_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
 
         if self.bw30_press[0]:
-            if xdata < self.bw30_markers[1].get_xdata():
+            if xdata < self.bw30_markers[1].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata >= 0:
                     # Limit BW to lowest frequency (index 0)
                     x = int(round(xdata))
                 else:
                     x = 0
-                self.bw30_markers[0].set_xdata(x)
+                self.bw30_markers[0].set_xdata([x])
                 self.bw30_idx[0] = x
                 self.bw30_line.set_xdata(self.bw30_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
         if self.bw30_press[1]:
-            if xdata > self.bw30_markers[0].get_xdata():
+            if xdata > self.bw30_markers[0].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata <= (self.gui_instance.num_frequency - 1):
                     # Limit BW to highest frequency (max index)
                     x = int(round(xdata))
                 else:
                     x = self.gui_instance.num_frequency - 1
-                self.bw30_markers[1].set_xdata(x)
+                self.bw30_markers[1].set_xdata([x])
                 self.bw30_idx[1] = x
                 self.bw30_line.set_xdata(self.bw30_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
 
         if self.bw40_press[0]:
-            if xdata < self.bw40_markers[1].get_xdata():
+            if xdata < self.bw40_markers[1].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata >= 0:
                     # Limit BW to lowest frequency (index 0)
                     x = int(round(xdata))
                 else:
                     x = 0
-                self.bw40_markers[0].set_xdata(x)
+                self.bw40_markers[0].set_xdata([x])
                 self.bw40_idx[0] = x
                 self.bw40_line.set_xdata(self.bw40_idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
         if self.bw40_press[1]:
-            if xdata > self.bw40_markers[0].get_xdata():
+            if xdata > self.bw40_markers[0].get_xdata()[0]:
                 # Don't allow markers to cross each other
                 if xdata <= (self.gui_instance.num_frequency - 1):
                     # Limit BW to highest frequency (max index)
                     x = int(round(xdata))
                 else:
                     x = self.gui_instance.num_frequency - 1
-                self.bw40_markers[1].set_xdata(x)
+                self.bw40_markers[1].set_xdata([x])
                 self.bw40_idx[1] = x
                 self.bw40_line.set_xdata(self.bw40_idx)
                 if self.detailed_plot:
