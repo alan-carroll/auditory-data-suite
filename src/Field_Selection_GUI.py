@@ -1290,7 +1290,7 @@ class FieldSelectionGUI(BoxLayout):
         # Changing the 0 to NaN allows us to backfill an inter_depth value from
         # the site(s) directly in front of them
         ic_df.loc[ic_df["inter_depth"] == 0, "inter_depth"] = np.nan
-        ic_df["inter_depth"] = ic_df["inter_depth"].fillna(method="bfill")
+        ic_df["inter_depth"] = ic_df["inter_depth"].bfill()
         ic_df["vert_up"] = ic_df["y"] - (ic_df["inter_depth"] / 2)
         ic_df["vert_down"] = ic_df["y"] + (ic_df["inter_depth"] / 2)
         # Multiply 'depth coordinates' by -1 and then normalize between 
