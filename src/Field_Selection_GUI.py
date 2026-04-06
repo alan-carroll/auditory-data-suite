@@ -835,11 +835,6 @@ class FieldSelectionGUI(BoxLayout):
     def paint_mode_active(self):
         """
         True when any of the stroke-painting toggles is engaged.
-
-        These four toggles share Kivy group "paint", so at most one is down
-        at a time — this property is just the "is the group active at all"
-        check that gates whether MapLayout consumes touch events for painting
-        vs. letting them fall through to the ScrollView for panning.
         """
         return any(t.state == "down" for t in (
             self.toggle,
@@ -852,9 +847,7 @@ class FieldSelectionGUI(BoxLayout):
         """
         Switch from the Map overview to the detailed analysis view for a site.
 
-        `self.parent` is the MapScreen that owns this layout, and
-        `Screen.manager` is a documented Kivy property — so this is one
-        stable hop, not a fragile chain.
+        `self.parent` is the MapScreen that owns this layout.
         """
         self.parent.manager.switch_to(self.site_screens[site_number])
 
