@@ -2213,6 +2213,38 @@ class SitePlot(RelativeLayout):
 
         self.bubble.update({"sizes": scaled_s ** 2})
 
+    def _draw_tc_overlays(self, ax, contour_color=None):
+        """
+        Draw CF marker, BW lines/markers, and contour on top of whichever
+        TC rendering (bubble / line / heatmap) just populated `ax`.
+
+        `contour_color` lets the dark-background plots (line, heatmap in
+        detailed view) force a white contour; None uses matplotlib's cycle.
+        """
+        if self.use_bw and (self.cf_idx is not None):
+            for lvl in BW_LEVELS:
+                idx = self.bw_idx[lvl]
+                if idx[0] is None:
+                    continue
+                y = self.thresh_idx + lvl // 5  # assumes 5 dB steps — TODO issue #13
+                self.bw_lines[lvl] = ax.plot(idx, [y, y], "r", lw=1.5)[0]
+                if self.detailed_plot:
+                    self.bw_markers[lvl][0] = ax.plot(
+                        idx[0], y, "rd", ms=8, picker=5)[0]
+                    self.bw_markers[lvl][1] = ax.plot(
+                        idx[1], y, "rd", ms=8, picker=5)[0]
+
+        if self.use_contour:
+            if contour_color:
+                self.contour_line = ax.contour(self.contour_tc, levels=[0],
+                                               colors=contour_color)
+            else:
+                self.contour_line = ax.contour(self.contour_tc, levels=[0])
+
+        if self.cf_idx is not None:
+            self.cf_marker = ax.plot(self.cf_idx, self.thresh_idx,
+                                     "r*", ms=8, alpha=0.5)[0]
+
     def bubble_plot(self, ax=None, x=None, y=None, s=None, color=None, 
                     axis_visible="off", axis_color="xkcd:white"):
         """
@@ -2275,51 +2307,8 @@ class SitePlot(RelativeLayout):
                                  lw=0.5, c=color)
         ax.set_facecolor(axis_color)
 
-        if self.use_bw and (self.cf_idx is not None):
-            # Assumes 5dB step size. Fix if it ever changes
-            bw10_y = self.thresh_idx + 2
-            bw20_y = self.thresh_idx + 4
-            bw30_y = self.thresh_idx + 6
-            bw40_y = self.thresh_idx + 8
-            if self.bw10_idx[0] is not None:
-                self.bw10_line = ax.plot(self.bw10_idx, [bw10_y, bw10_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw10_markers[0] = ax.plot(self.bw10_idx[0], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw10_markers[1] = ax.plot(self.bw10_idx[1], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw20_idx[0] is not None:
-                self.bw20_line = ax.plot(self.bw20_idx, [bw20_y, bw20_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw20_markers[0] = ax.plot(self.bw20_idx[0], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw20_markers[1] = ax.plot(self.bw20_idx[1], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw30_idx[0] is not None:
-                self.bw30_line = ax.plot(self.bw30_idx, [bw30_y, bw30_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw30_markers[0] = ax.plot(self.bw30_idx[0], bw30_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw30_markers[1] = ax.plot(self.bw30_idx[1], bw30_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw40_idx[0] is not None:
-                self.bw40_line = ax.plot(self.bw40_idx, [bw40_y, bw40_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw40_markers[0] = ax.plot(self.bw40_idx[0], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw40_markers[1] = ax.plot(self.bw40_idx[1], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
+        self._draw_tc_overlays(ax)
 
-        if self.use_contour:
-            self.contour_line = ax.contour(self.contour_tc, levels=[0])
-
-        if self.cf_idx is not None:
-            self.cf_marker = ax.plot(self.cf_idx, self.thresh_idx, 
-                                     "r*", ms=8, alpha=0.5)[0]
         ax.set_xlim([0, self.gui_instance.num_frequency])
         ax.set_ylim([0, self.gui_instance.num_intensity])
         ax.axis(axis_visible)
@@ -2372,55 +2361,9 @@ class SitePlot(RelativeLayout):
         ax.add_collection(self.line)
         ax.set_facecolor(axis_color)
 
-        if self.use_bw and self.cf_idx:
-            # Assumes 5dB step size. Fix if it ever changes
-            bw10_y = self.thresh_idx + 2
-            bw20_y = self.thresh_idx + 4
-            bw30_y = self.thresh_idx + 6
-            bw40_y = self.thresh_idx + 8
-            if self.bw10_idx[0] is not None:
-                self.bw10_line = ax.plot(self.bw10_idx, [bw10_y, bw10_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw10_markers[0] = ax.plot(self.bw10_idx[0], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw10_markers[1] = ax.plot(self.bw10_idx[1], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw20_idx[0] is not None:
-                self.bw20_line = ax.plot(self.bw20_idx, [bw20_y, bw20_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw20_markers[0] = ax.plot(self.bw20_idx[0], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw20_markers[1] = ax.plot(self.bw20_idx[1], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw30_idx[0] is not None:
-                self.bw30_line = ax.plot(self.bw30_idx, [bw30_y, bw30_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw30_markers[0] = ax.plot(self.bw30_idx[0], bw30_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw30_markers[1] = ax.plot(self.bw30_idx[1], bw30_y,
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw40_idx[0] is not None:
-                self.bw40_line = ax.plot(self.bw40_idx, [bw40_y, bw40_y],
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw40_markers[0] = ax.plot(self.bw40_idx[0], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw40_markers[1] = ax.plot(self.bw40_idx[1], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
-
-        if self.use_contour:
-            if self.detailed_plot:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0], 
-                                               colors="xkcd:white")
-            else:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0])
-
-        if self.cf_idx:
-            self.cf_marker = ax.plot(self.cf_idx, self.thresh_idx, 
-                                     "r*", ms=8, alpha=1)[0]
+        self._draw_tc_overlays(
+            ax, contour_color="xkcd:white" if self.detailed_plot else None)
+        
         ax.set_xlim([0, self.gui_instance.num_frequency])
         ax.set_ylim([0, self.gui_instance.num_intensity])
         ax.axis(axis_visible)
@@ -2453,55 +2396,9 @@ class SitePlot(RelativeLayout):
         self.heatmap = ax.imshow(tc_image, cmap=self.heatmap_cmap, 
                                  aspect="auto")
 
-        if self.use_bw and self.cf_idx:
-            # TODO Assumes 5dB step size. Fix if it ever changes
-            bw10_y = self.thresh_idx + 2
-            bw20_y = self.thresh_idx + 4
-            bw30_y = self.thresh_idx + 6
-            bw40_y = self.thresh_idx + 8
-            if self.bw10_idx[0] is not None:
-                self.bw10_line = ax.plot(self.bw10_idx, [bw10_y, bw10_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw10_markers[0] = ax.plot(self.bw10_idx[0], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw10_markers[1] = ax.plot(self.bw10_idx[1], bw10_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw20_idx[0] is not None:
-                self.bw20_line = ax.plot(self.bw20_idx, [bw20_y, bw20_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw20_markers[0] = ax.plot(self.bw20_idx[0], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw20_markers[1] = ax.plot(self.bw20_idx[1], bw20_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw30_idx[0] is not None:
-                self.bw30_line = ax.plot(self.bw30_idx, [bw30_y, bw30_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw30_markers[0] = ax.plot(self.bw30_idx[0], bw30_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw30_markers[1] = ax.plot(self.bw30_idx[1], bw30_y, 
-                                                   "rd", ms=8, picker=5)[0]
-            if self.bw40_idx[0] is not None:
-                self.bw40_line = ax.plot(self.bw40_idx, [bw40_y, bw40_y], 
-                                         "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw40_markers[0] = ax.plot(self.bw40_idx[0], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
-                    self.bw40_markers[1] = ax.plot(self.bw40_idx[1], bw40_y, 
-                                                   "rd", ms=8, picker=5)[0]
-
-        if self.use_contour:
-            if self.detailed_plot:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0], 
-                                               colors="xkcd:white")
-            else:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0])
-
-        if self.cf_idx:
-            self.cf_marker = ax.plot(self.cf_idx, self.thresh_idx, 
-                                     "r*", ms=8, alpha=1)[0]
+        self._draw_tc_overlays(
+            ax, contour_color="xkcd:white" if self.detailed_plot else None)
+        
         ax.set_xlim([0, self.gui_instance.num_frequency-1])
         ax.set_ylim([0, self.gui_instance.num_intensity-1])
         ax.axis(axis_visible)
