@@ -37,6 +37,11 @@ from matplotlib.collections import LineCollection
 import warnings
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
 
+# dB-above-threshold levels at which bandwidths are measured. The y-offset
+# on the TC plot for each is level // intensity_step (currently 5 dB steps,
+# so BW10 sits 2 rows above threshold, BW20 sits 4 rows above, etc.).
+BW_LEVELS = (10, 20, 30, 40)
+
 # Ignore warnings about opening too many figures or not finding contour lines 
 # issued by matplotlib
 warnings.filterwarnings("ignore", module="matplotlib")
@@ -1802,14 +1807,10 @@ class SitePlot(RelativeLayout):
         self.peak_driven_rate = self.site_analysis["peak_driven_rate_hz"]
         self.saved_peak_driven_rate = self.site_analysis["peak_driven_rate_hz"]
         self.spont_rate = self.site_analysis["spont_firing_rate_hz"]
-        self.bw10_idx = self.site_analysis["bw10_idx"].copy()
-        self.saved_bw10_idx = self.site_analysis["bw10_idx"].copy()
-        self.bw20_idx = self.site_analysis["bw20_idx"].copy()
-        self.saved_bw20_idx = self.site_analysis["bw20_idx"].copy()
-        self.bw30_idx = self.site_analysis["bw30_idx"].copy()
-        self.saved_bw30_idx = self.site_analysis["bw30_idx"].copy()
-        self.bw40_idx = self.site_analysis["bw40_idx"].copy()
-        self.saved_bw40_idx = self.site_analysis["bw40_idx"].copy()
+        self.bw_idx = {lvl: self.site_analysis[f"bw{lvl}_idx"].copy()
+                       for lvl in BW_LEVELS}
+        self.saved_bw_idx = {lvl: self.site_analysis[f"bw{lvl}_idx"].copy()
+                             for lvl in BW_LEVELS}
         self.continuous_bw_idx = self.site_analysis["continuous_bw_idx"].copy()
         self.saved_continuous_bw_idx = self.site_analysis["continuous_bw_idx"].copy()
         try:
@@ -1839,18 +1840,9 @@ class SitePlot(RelativeLayout):
         self.use_lineplot = False
         self.use_heatmap = False
         self.cf_marker = None
-        self.bw10_line = None
-        self.bw20_line = None
-        self.bw30_line = None
-        self.bw40_line = None
-        self.bw10_markers = [None, None]
-        self.bw20_markers = [None, None]
-        self.bw30_markers = [None, None]
-        self.bw40_markers = [None, None]
-        self.bw10_press = [0, 0]
-        self.bw20_press = [0, 0]
-        self.bw30_press = [0, 0]
-        self.bw40_press = [0, 0]
+        self.bw_lines = {lvl: None for lvl in BW_LEVELS}
+        self.bw_markers = {lvl: [None, None] for lvl in BW_LEVELS}
+        self.bw_press = {lvl: [False, False] for lvl in BW_LEVELS}
         self.contour_line = None
         self.picking_cf = False
         self.picking_bw = False
@@ -2653,33 +2645,18 @@ class SitePlot(RelativeLayout):
         else:
             self.cf_marker.set_xdata(self.cf_idx)
             self.cf_marker.set_ydata(self.thresh_idx)
-        # Ensure all BWs are set correctly. If BW exceeds range, set to None. 
-        # If setting new BW (was previously None, but now should exist with new
-        # threshold), set to very wide default range across available frequency
-        # range
-        # Assumes 5dB step size. Fix if it ever changes
         freq_range = self.gui_instance.num_frequency
         int_range = self.gui_instance.num_intensity
-        if (self.thresh_idx + 2) <= int_range:
-            if self.bw10_idx[0] is None:
-                self.bw10_idx = [10, freq_range - 10]
-        else:
-            self.bw10_idx = [None, None]
-        if (self.thresh_idx + 4) <= int_range:
-            if self.bw20_idx[0] is None:
-                self.bw20_idx = [10, freq_range - 10]
-        else:
-            self.bw20_idx = [None, None]
-        if (self.thresh_idx + 6) <= int_range:
-            if self.bw30_idx[0] is None:
-                self.bw30_idx = [10, freq_range - 10]
-        else:
-            self.bw30_idx = [None, None]
-        if (self.thresh_idx + 8) <= int_range:
-            if self.bw40_idx[0] is None:
-                self.bw40_idx = [10, freq_range - 10]
-        else:
-            self.bw40_idx = [None, None]
+        # Any BW whose row now sits above the intensity grid is cleared;
+        # any that's newly in-range but was previously absent gets a wide
+        # default so the user has handles to drag.
+        for lvl in BW_LEVELS:
+            row = self.thresh_idx + lvl // 5  # assumes 5 dB steps — TODO issue #13
+            if row <= int_range:
+                if self.bw_idx[lvl][0] is None:
+                    self.bw_idx[lvl] = [10, freq_range - 10]
+            else:
+                self.bw_idx[lvl] = [None, None]
 
         # Un-flag picking_cf
         self.picking_cf = False
@@ -2695,189 +2672,57 @@ class SitePlot(RelativeLayout):
         lines.
         """
         # TODO currently doesn't do anything to continuous_bw
-        if self.bw10_markers[0] is not None:
-            if self.bw10_markers[0].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw10_markers[0].set_ms(12)
-                self.bw10_press[0] = 1
-                event.canvas.draw()
-            elif self.bw10_markers[1].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw10_markers[1].set_ms(12)
-                self.bw10_press[1] = 1
-                event.canvas.draw()
-        if self.bw20_markers[0] is not None:
-            if self.bw20_markers[0].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw20_markers[0].set_ms(12)
-                self.bw20_press[0] = 1
-                event.canvas.draw()
-            elif self.bw20_markers[1].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw20_markers[1].set_ms(12)
-                self.bw20_press[1] = 1
-                event.canvas.draw()
-        if self.bw30_markers[0] is not None:
-            if self.bw30_markers[0].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw30_markers[0].set_ms(12)
-                self.bw30_press[0] = 1
-                event.canvas.draw()
-            elif self.bw30_markers[1].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw30_markers[1].set_ms(12)
-                self.bw30_press[1] = 1
-                event.canvas.draw()
-        if self.bw40_markers[0] is not None:
-            if self.bw40_markers[0].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw40_markers[0].set_ms(12)
-                self.bw40_press[0] = 1
-                event.canvas.draw()
-            elif self.bw40_markers[1].contains(event)[0]:
-                self.bw_pressed = True
-                self.bw40_markers[1].set_ms(12)
-                self.bw40_press[1] = 1
-                event.canvas.draw()
+        for lvl in BW_LEVELS:
+            markers = self.bw_markers[lvl]
+            if markers[0] is None:
+                continue
+            for side in (0, 1):
+                if markers[side].contains(event)[0]:
+                    self.bw_pressed = True
+                    markers[side].set_ms(12)
+                    self.bw_press[lvl][side] = True
+                    event.canvas.draw()
+                    return  # one marker at a time
 
     def move_bw(self, event_x, event_y):
-        """Ongoing UX for user updating bandwidth."""
-        # Must transform into axes user data coordinates (xlim, ylim) in order 
-        # to move line to appropriate x-coordinate based on mouse position
+        """
+        Drag the currently-held BW marker, clamped to [0, max_freq_idx] and
+        prevented from crossing its partner.
+        """
         ax_inv = self.ax[1].transData.inverted()
-        xdata, ydata = ax_inv.transform((event_x, event_y))
+        xdata, _ = ax_inv.transform((event_x, event_y))
         if xdata is None:
             return
+        max_idx = self.gui_instance.num_frequency - 1
 
-        if self.bw10_press[0]:
-            if xdata < self.bw10_markers[1].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata >= 0:
-                    # Limit BW to lowest frequency (index 0)
-                    x = int(round(xdata))
-                else:
-                    x = 0
-                self.bw10_markers[0].set_xdata(x)
-                self.bw10_idx[0] = x
-                self.bw10_line.set_xdata(self.bw10_idx)
+        for lvl in BW_LEVELS:
+            press = self.bw_press[lvl]
+            markers = self.bw_markers[lvl]
+            idx = self.bw_idx[lvl]
+            if press[0] and xdata < markers[1].get_xdata()[0]:
+                x = max(0, int(round(xdata)))
+                markers[0].set_xdata([x])
+                idx[0] = x
+                self.bw_lines[lvl].set_xdata(idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
-        if self.bw10_press[1]:
-            if xdata > self.bw10_markers[0].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata <= (self.gui_instance.num_frequency - 1):
-                    # Limit BW to highest frequency (max index)
-                    x = int(round(xdata))
-                else:
-                    x = self.gui_instance.num_frequency - 1
-                self.bw10_markers[1].set_xdata(x)
-                self.bw10_idx[1] = x
-                self.bw10_line.set_xdata(self.bw10_idx)
+            elif press[1] and xdata > markers[0].get_xdata()[0]:
+                x = min(max_idx, int(round(xdata)))
+                markers[1].set_xdata([x])
+                idx[1] = x
+                self.bw_lines[lvl].set_xdata(idx)
                 if self.detailed_plot:
                     self.on_changes_signal.send()
-
-        if self.bw20_press[0]:
-            if xdata < self.bw20_markers[1].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata >= 0:
-                    # Limit BW to lowest frequency (index 0)
-                    x = int(round(xdata))
-                else:
-                    x = 0
-                self.bw20_markers[0].set_xdata(x)
-                self.bw20_idx[0] = x
-                self.bw20_line.set_xdata(self.bw20_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-        if self.bw20_press[1]:
-            if xdata > self.bw20_markers[0].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata <= (self.gui_instance.num_frequency - 1):
-                    # Limit BW to highest frequency (max index)
-                    x = int(round(xdata))
-                else:
-                    x = self.gui_instance.num_frequency - 1
-                self.bw20_markers[1].set_xdata(x)
-                self.bw20_idx[1] = x
-                self.bw20_line.set_xdata(self.bw20_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-
-        if self.bw30_press[0]:
-            if xdata < self.bw30_markers[1].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata >= 0:
-                    # Limit BW to lowest frequency (index 0)
-                    x = int(round(xdata))
-                else:
-                    x = 0
-                self.bw30_markers[0].set_xdata(x)
-                self.bw30_idx[0] = x
-                self.bw30_line.set_xdata(self.bw30_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-        if self.bw30_press[1]:
-            if xdata > self.bw30_markers[0].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata <= (self.gui_instance.num_frequency - 1):
-                    # Limit BW to highest frequency (max index)
-                    x = int(round(xdata))
-                else:
-                    x = self.gui_instance.num_frequency - 1
-                self.bw30_markers[1].set_xdata(x)
-                self.bw30_idx[1] = x
-                self.bw30_line.set_xdata(self.bw30_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-
-        if self.bw40_press[0]:
-            if xdata < self.bw40_markers[1].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata >= 0:
-                    # Limit BW to lowest frequency (index 0)
-                    x = int(round(xdata))
-                else:
-                    x = 0
-                self.bw40_markers[0].set_xdata(x)
-                self.bw40_idx[0] = x
-                self.bw40_line.set_xdata(self.bw40_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-        if self.bw40_press[1]:
-            if xdata > self.bw40_markers[0].get_xdata():
-                # Don't allow markers to cross each other
-                if xdata <= (self.gui_instance.num_frequency - 1):
-                    # Limit BW to highest frequency (max index)
-                    x = int(round(xdata))
-                else:
-                    x = self.gui_instance.num_frequency - 1
-                self.bw40_markers[1].set_xdata(x)
-                self.bw40_idx[1] = x
-                self.bw40_line.set_xdata(self.bw40_idx)
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-
         self.figure_canvas.draw()
 
     def off_bw(self):
         """Final UX for user updating bandwidth."""
-        self.bw10_press = [0, 0]
-        self.bw20_press = [0, 0]
-        self.bw30_press = [0, 0]
-        self.bw40_press = [0, 0]
-        if self.bw10_markers[0] is not None:
-            self.bw10_markers[0].set_ms(8)
-            self.bw10_markers[1].set_ms(8)
-        if self.bw20_markers[0] is not None:
-            self.bw20_markers[0].set_ms(8)
-            self.bw20_markers[1].set_ms(8)
-        if self.bw30_markers[0] is not None:
-            self.bw30_markers[0].set_ms(8)
-            self.bw30_markers[1].set_ms(8)
-        if self.bw40_markers[0] is not None:
-            self.bw40_markers[0].set_ms(8)
-            self.bw40_markers[1].set_ms(8)
-
+        self.bw_pressed = False
+        for lvl in BW_LEVELS:
+            self.bw_press[lvl] = [False, False]
+            if self.bw_markers[lvl][0] is not None:
+                self.bw_markers[lvl][0].set_ms(8)
+                self.bw_markers[lvl][1].set_ms(8)
         self.figure_canvas.draw()
 
 class InfoPopup(Popup):
