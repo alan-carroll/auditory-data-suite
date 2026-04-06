@@ -616,17 +616,15 @@ def create_new_densetc_analysis(template_id, new_metadata,
 
 def new_analysis_metadata_document():
     """
-    Creates a new analysis_metadata document. 
-    
-    Returns a dictionary containing metadata with fields corresponding to
-    analysis_metadata collection of tinymongo database
+    CLI/tkinter prompt for new analysis metadata.
+
+    Returns the dict from build_analysis_metadata(), or never returns if
+    the user keeps cancelling (the inner while loops re-prompt on None).
+    GUI callers should use build_analysis_metadata() directly with their
+    own Kivy-collected inputs instead of calling this.
     """
-    today = str(datetime.datetime.now())
     root = tk.Tk()
     root.withdraw()
-    
-    name = ""
-    comments = ""
     answer = False
     while not answer:
         while (name := simpledialog.askstring(
@@ -638,18 +636,25 @@ def new_analysis_metadata_document():
         answer = messagebox.askyesno(
             "Verify", 
             f"Is this correct?\nName: {name}\n\nComments: {comments}")
+    root.destroy()
+    return build_analysis_metadata(name, comments)
 
-    analysis_metadata = {
+def build_analysis_metadata(name, comments):
+    """
+    Construct an analysis_metadata document dict. Pure data — no UI.
+
+    Keeping the schema in one place so the CLI tkinter prompt and the GUI's
+    Kivy popup both build identical dicts. If you add a field here, both
+    callers pick it up automatically.
+    """
+    today = str(datetime.datetime.now())
+    return {
         "name": name,
         "comments": comments,
         "start_date": today,
         "last_modified": today,
         "frozen": False,
-    }
-    root.destroy()
-    
-    return analysis_metadata
-    
+    }    
 
 def get_map_number(filename):
     """
@@ -1384,28 +1389,22 @@ def create_final_file(ic_bool=False):
         densetc_analysis_collection = subject_database.densetc_analysis
     analysis_metadata_collection = subject_database.analysis_metadata
 
-    # Load analysis. 
-    # TODO Prevent creation of new analysis here? Currently it is allowed.
-    analysis_loaded = False
-    while not analysis_loaded:
-        analysis_selection, create_new_analysis = \
-            load_analysis(analysis_metadata_collection)
-        if analysis_selection is None:  # Menu exited without selection
-            return
-        elif create_new_analysis:
-            new_analysis_metadata = new_analysis_metadata_document()
-            if new_analysis_metadata is None:  # User hit cancel.
-                continue
-            template_id = analysis_selection["_id"]
-            analysis_id = create_new_densetc_analysis(
-                template_id,
-                new_analysis_metadata,
-                analysis_metadata_collection,
-                densetc_analysis_collection)
-            analysis_loaded = True
-        else:
-            analysis_id = analysis_selection["_id"]
-            analysis_loaded = True
+    # Load an existing analysis to export. The create-new button in
+    # load_analysis() still exists (shared UI with the GUI's load flow),
+    # but creating a fresh analysis during export is pointless — you'd
+    # just be exporting the template you cloned. Bail with a message if
+    # the user tries it.
+    analysis_selection, create_new_analysis = \
+        load_analysis(analysis_metadata_collection)
+    if analysis_selection is None:
+        return
+    if create_new_analysis:
+        print(Fore.YELLOW +
+              "Can't create a new analysis during final-file export — "
+              "there'd be nothing in it yet. Pick an existing one." +
+              Style.RESET_ALL)
+        return
+    analysis_id = analysis_selection["_id"]
 
     densetc_analysis = {analysis["number"]: analysis for analysis in
                         densetc_analysis_collection.find(
