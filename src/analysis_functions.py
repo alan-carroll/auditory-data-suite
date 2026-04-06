@@ -12,7 +12,7 @@ from tkinter import filedialog, simpledialog, messagebox
 import re
 from collections import defaultdict
 import burst_detection as bd
-from shapely.ops import cascaded_union, polygonize
+from shapely.ops import unary_union, polygonize
 import math
 from scipy.spatial import Delaunay
 import numpy as np
@@ -941,7 +941,7 @@ def alpha_shape(points, alpha):
     m = geometry.MultiLineString(edge_points)
     triangles = list(polygonize(m))
     
-    return cascaded_union(triangles), edge_points
+    return unary_union(triangles), edge_points
 
 
 def count_spikes(sweep, onset, offset):
