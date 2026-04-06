@@ -616,17 +616,15 @@ def create_new_densetc_analysis(template_id, new_metadata,
 
 def new_analysis_metadata_document():
     """
-    Creates a new analysis_metadata document. 
-    
-    Returns a dictionary containing metadata with fields corresponding to
-    analysis_metadata collection of tinymongo database
+    CLI/tkinter prompt for new analysis metadata.
+
+    Returns the dict from build_analysis_metadata(), or never returns if
+    the user keeps cancelling (the inner while loops re-prompt on None).
+    GUI callers should use build_analysis_metadata() directly with their
+    own Kivy-collected inputs instead of calling this.
     """
-    today = str(datetime.datetime.now())
     root = tk.Tk()
     root.withdraw()
-    
-    name = ""
-    comments = ""
     answer = False
     while not answer:
         while (name := simpledialog.askstring(
@@ -638,18 +636,25 @@ def new_analysis_metadata_document():
         answer = messagebox.askyesno(
             "Verify", 
             f"Is this correct?\nName: {name}\n\nComments: {comments}")
+    root.destroy()
+    return build_analysis_metadata(name, comments)
 
-    analysis_metadata = {
+def build_analysis_metadata(name, comments):
+    """
+    Construct an analysis_metadata document dict. Pure data — no UI.
+
+    Keeping the schema in one place so the CLI tkinter prompt and the GUI's
+    Kivy popup both build identical dicts. If you add a field here, both
+    callers pick it up automatically.
+    """
+    today = str(datetime.datetime.now())
+    return {
         "name": name,
         "comments": comments,
         "start_date": today,
         "last_modified": today,
         "frozen": False,
-    }
-    root.destroy()
-    
-    return analysis_metadata
-    
+    }    
 
 def get_map_number(filename):
     """
