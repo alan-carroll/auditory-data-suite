@@ -823,13 +823,33 @@ class FieldSelectionGUI(BoxLayout):
         self.plot_tools_layout.add_widget(self.psth_y_label)
         self.plot_tools_layout.add_widget(self.psth_y_spinner)
 
-        self.map_canvas = MapLayout(size_hint_x=None, size_hint_y=None)
+        self.map_canvas = MapLayout(gui=self, size_hint_x=None, size_hint_y=None)
         self.scroll = MapScroll(size_hint=(1, 1))
         self.scroll.add_widget(self.map_canvas)
 
         self.add_widget(tools)
         self.add_widget(self.scroll)
         self.add_widget(self.plot_tools_layout)
+
+    @property
+    def paint_mode_active(self):
+        """
+        True when any of the stroke-painting toggles is engaged.
+        """
+        return any(t.state == "down" for t in (
+            self.toggle,
+            self.deselect_toggle,
+            self.show_figure_toggle,
+            self.hide_figure_toggle,
+        ))
+
+    def open_site_screen(self, site_number):
+        """
+        Switch from the Map overview to the detailed analysis view for a site.
+
+        `self.parent` is the MapScreen that owns this layout.
+        """
+        self.parent.manager.switch_to(self.site_screens[site_number])
 
     def on_cf_colormap(self, _spinner, value):
         """Update bubble plot CF colormap using new selection."""
@@ -1624,6 +1644,16 @@ class FieldSelectionGUI(BoxLayout):
 
 
 class MapLayout(FloatLayout):
+    def __init__(self, *, gui, **kwargs):
+        """
+        `gui` is the owning FieldSelectionGUI. Stored so touch handlers can
+        reach voronoi state, toggles, and plot dicts without walking
+        `.parent.parent` through the intervening ScrollView (allows
+        rearranging layout nesting without breaking chains).
+        """
+        super().__init__(**kwargs)
+        self.gui = gui
+
     def on_touch_down(self, touch):
         """
         Double-tap on a voronoi cell opens that site's detail screen.
@@ -1635,43 +1665,29 @@ class MapLayout(FloatLayout):
         Hit-testing rebuilds each polygon from its current Kivy Line points
         every time, since zoom rescales absolute coordinates.
         """
+        gui = self.gui
         if touch.is_double_tap:
-            for line_ in self.parent.parent.vor_lines.values():
+            for line_ in gui.vor_lines.values():
                 poly_points = line_.line.points
                 poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
                 if MplPath(poly_xy).contains_point((touch.x, touch.y)):
-                    num = line_.site_number
-                    screen_manager = self.parent.parent.parent.manager
-                    screen_manager.switch_to(
-                        self.parent.parent.site_screens[num])
-
-        if ((self.parent.parent.toggle.state == "down") or 
-            (self.parent.parent.deselect_toggle.state == "down") or
-            (self.parent.parent.show_figure_toggle.state == "down") or 
-            (self.parent.parent.hide_figure_toggle.state == "down")):
+                    gui.open_site_screen(line_.site_number)
+        if gui.paint_mode_active:
             with self.canvas:
                 Color(1, 0, 0)
                 touch.ud["line"] = Line(points=(touch.x, touch.y), width=1.5)
         else:
-            super(MapLayout, self).on_touch_down(touch)
+            super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
         """
-        Checks if Select/Deselect A1 is toggled: If yes, and on_touch_down 
-        generated a paint line, then continue drawing line at user's mouse 
-        location.
-        Using try/except because occasionally an error is thrown by GUI (do not
-        know why) and will crash the program.
-        Ignoring the error has no consequence, so the except clause simply 
-        passes.
+        Extend the paint stroke.
         """
+        # TODO tighten to `except KeyError` if verified same as `on_touch_up`
         try:
-            if ((self.parent.parent.toggle.state == "down") or 
-                (self.parent.parent.deselect_toggle.state == "down") or
-                (self.parent.parent.show_figure_toggle.state == "down") or 
-                (self.parent.parent.hide_figure_toggle.state == "down")):
+            if self.gui.paint_mode_active:
                 touch.ud["line"].points += [touch.x, touch.y]
-        except:  # TODO Figure out error raised
+        except:
             pass
 
     def on_touch_up(self, touch):
@@ -1686,101 +1702,93 @@ class MapLayout(FloatLayout):
         3. Neither → let Kivy handle it.
         """
         if touch.is_mouse_scrolling:
-            h = self.height
-            w = self.width
+            w, h = self.width, self.height
             if touch.button == "scrollup":
                 self.size = (w * 0.9, h * 0.9)
             elif touch.button == "scrolldown":
                 self.size = (w * 1.1, h * 1.1)
             return True
 
-        elif ((self.parent.parent.toggle.state == "down") or 
-              (self.parent.parent.deselect_toggle.state == "down") or
-              (self.parent.parent.show_figure_toggle.state == "down") or 
-              (self.parent.parent.hide_figure_toggle.state == "down")):
-            try:
-                stroke = touch.ud["line"].points
-                selection_points = list(zip(stroke[0::2], stroke[1::2]))
-            except KeyError:
-                # Error sometimes thrown when program tries to interpret a line
-                # drawn over other GUI elements
-                super(MapLayout, self).on_touch_up(touch)
-                return
+        gui = self.gui
 
-            for line_ in self.parent.parent.vor_lines.values():
-                poly_points = line_.line.points
-                poly_xy = list(zip(poly_points[0::2], poly_points[1::2]))
-                # Vectorized hit-test across every point in the user's stroke.
-                if MplPath(poly_xy).contains_points(selection_points).any():
-                    site_num = line_.site_number
-                    # Check if cell is currently interactive or hidden. 
-                    # If hidden, move on
-                    if not self.parent.parent.vor_active[site_num]:
+        if not gui.paint_mode_active:
+            super().on_touch_up(touch)
+            return
+
+        try:
+            stroke = touch.ud["line"].points
+            selection_points = list(zip(stroke[0::2], stroke[1::2]))
+        except KeyError:
+            # Error sometimes thrown when program tries to interpret a line
+            # drawn over other GUI elements
+            super().on_touch_up(touch)
+            return
+
+        alpha = gui.field_alpha_slider.value_normalized
+
+        for line_ in gui.vor_lines.values():
+            pts = line_.line.points
+            poly = list(zip(pts[0::2], pts[1::2]))
+            if not MplPath(poly).contains_points(selection_points).any():
+                continue
+
+            site_num = line_.site_number
+            if not gui.vor_active[site_num]:
+                # Cell is currently hidden → non-interactive.
+                continue
+
+            if gui.toggle.state == "down":
+                # --- Select: assign the active field/Mark to this site ---
+                line_.line.width = 3
+                chosen = gui.field_spinner.text
+                for field in gui.fields:
+                    if field == chosen:
+                        gui.map_sets[field].add(site_num)
+                        gui.vor_meshes[site_num].color.rgb = \
+                            hex2rgb(gui.field_colors[field])
+                        gui.vor_meshes[site_num].color.a = alpha
+                        line_.color.rgb = \
+                            hex2rgb(gui.field_line_colors[field])
+                        # If Hide-<field> is toggled, re-evaluate visibility
+                        # now that this site belongs to it — lets the user
+                        # progressively select-then-hide. The string arg is
+                        # a dummy to satisfy the Kivy callback signature.
+                        gui.on_hide_field("field_selection",
+                                          site_number=site_num)
+                    else:
+                        # Sites belong to exactly one auditory field, but
+                        # skip if user is marking them instead
+                        if gui.marks_active or field == "Mark":
+                            continue
+                        gui.map_sets[field].discard(site_num)
+
+            elif gui.deselect_toggle.state == "down":
+                # --- Deselect: strip assignment, repaint as blank ---
+                line_.color.rgb = [0.435, 0.51, 0.541]  # xkcd:steel grey
+                line_.line.width = 1.5
+                gui.vor_meshes[site_num].color.rgb = [1, 1, 1]
+                gui.vor_meshes[site_num].color.a = alpha
+                for field in gui.fields:
+                    # Same as selection rule above
+                    if field == "Mark" and not gui.marks_active:
                         continue
-                    # Update mesh colors
-                    if self.parent.parent.toggle.state == "down":
-                        line_.line.width = 3
-                        field_selection = self.parent.parent.field_spinner.text
-                        for field in self.parent.parent.fields:
-                            if field == field_selection:
-                                self.parent.parent.map_sets[field].add(site_num)
-                                self.parent.parent.vor_meshes[site_num].color.rgb = \
-                                    hex2rgb(self.parent.parent.field_colors[field])
-                                alpha_value = self.parent.parent.field_alpha_slider.value_normalized
-                                self.parent.parent.vor_meshes[site_num].color.a = alpha_value
-                                line_.color.rgb = hex2rgb(self.parent.parent.field_line_colors[field])
-                                # Allow user to progressively select and hide sites for a field
-                                # Pass fake event 'field_selection' to satisfy Kivy callback requirements
-                                self.parent.parent.on_hide_field(
-                                    "field_selection", site_number=site_num)
-                            else:
-                                if self.parent.parent.marks_active:
-                                    # If selecting Marks, don't remove Sites from other Field sets
-                                    continue
-                                elif field == "Mark":
-                                    # If selecting Fields, don't remove Marks from map set
-                                    continue
+                    if field != "Mark" and gui.marks_active:
+                        continue
+                    gui.map_sets[field].discard(site_num)
 
-                                # Prevent duplicate field assignments
-                                try:
-                                    self.parent.parent.map_sets[field].remove(
-                                        site_num)
-                                except KeyError:  # If site is not in set, skip
-                                    pass
+            elif gui.show_figure_toggle.state == "down":
+                plot = gui.plot_dict[site_num]
+                plot.active = True
+                plot.opacity = 1
+                plot.manually_hidden = False
 
-                    # 'Deselect' is toggled on
-                    elif self.parent.parent.deselect_toggle.state == "down":
-                        # xkcd:steel grey
-                        line_.color.rgb = [0.435, 0.51, 0.541]
-                        line_.line.width = 1.5
-                        self.parent.parent.vor_meshes[site_num].color.rgb = [1, 1, 1]
-                        alpha_value = self.parent.parent.field_alpha_slider.value_normalized
-                        self.parent.parent.vor_meshes[site_num].color.a = alpha_value
-                        for field in self.parent.parent.fields:
-                            if (field == "Mark" and 
-                                not self.parent.parent.marks_active):
-                                # Skip removing Site from Mark map set if not working on Marks
-                                continue
-                            elif (field != "Mark" and 
-                                  self.parent.parent.marks_active):
-                                # Skip removing Site from Fields sets if not working on Fields
-                                continue
-                            try:
-                                self.parent.parent.map_sets[field].remove(site_num)
-                            except KeyError:  # If site is not in set, skip
-                                pass
-                    elif self.parent.parent.show_figure_toggle.state == "down":
-                        self.parent.parent.plot_dict[site_num].active = True
-                        self.parent.parent.plot_dict[site_num].opacity = 1
-                        self.parent.parent.plot_dict[site_num].manually_hidden = False
-                    elif self.parent.parent.hide_figure_toggle.state == "down":
-                        self.parent.parent.plot_dict[site_num].active = False
-                        self.parent.parent.plot_dict[site_num].opacity = 0
-                        self.parent.parent.plot_dict[site_num].manually_hidden = True
+            elif gui.hide_figure_toggle.state == "down":
+                plot = gui.plot_dict[site_num]
+                plot.active = False
+                plot.opacity = 0
+                plot.manually_hidden = True
 
-            self.canvas.remove(touch.ud["line"])
-        else:
-            super(MapLayout, self).on_touch_up(touch)
+        self.canvas.remove(touch.ud["line"])
 
 
 class MapScroll(ScrollView):
