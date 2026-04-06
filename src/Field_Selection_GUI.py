@@ -26,8 +26,6 @@ import pandas as pd
 import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
 from kivy.uix.screenmanager import Screen, ScreenManager
-import tkinter as tk
-from tkinter import messagebox
 import logging
 from kivy.uix.slider import Slider
 import analysis_functions as afunc
@@ -1122,10 +1120,7 @@ class FieldSelectionGUI(BoxLayout):
                     "last_modified": today
                 }})
 
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo("Success!", "Fields / Marks saved!")
-            root.destroy()
+            InfoPopup("Success", "Fields / Marks saved!").open()
 
     def increase_figsize(self, _event):
         """Increase matplotlib figure size."""
