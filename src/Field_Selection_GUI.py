@@ -253,10 +253,8 @@ class SiteScreen(Screen):
         # Reset values to default
         self.densetc_plot.cf_idx = self.densetc_plot.saved_cf_idx
         self.densetc_plot.thresh_idx = self.densetc_plot.saved_thresh_idx
-        self.densetc_plot.bw10_idx = self.densetc_plot.saved_bw10_idx.copy()
-        self.densetc_plot.bw20_idx = self.densetc_plot.saved_bw20_idx.copy()
-        self.densetc_plot.bw30_idx = self.densetc_plot.saved_bw30_idx.copy()
-        self.densetc_plot.bw40_idx = self.densetc_plot.saved_bw40_idx.copy()
+        self.densetc_plot.bw_idx = {
+            lvl: v.copy() for lvl, v in self.densetc_plot.saved_bw_idx.items()}
         self.densetc_plot.continuous_bw_idx = \
             self.densetc_plot.saved_continuous_bw_idx.copy()
         self.densetc_plot.onset = self.densetc_plot.saved_onset
@@ -358,10 +356,6 @@ class SiteScreen(Screen):
         intensities = self.gui_instance.intensity
 
         # Copy just in case, to prevent any dangling references
-        bw10 = self.densetc_plot.bw10_idx.copy()
-        bw20 = self.densetc_plot.bw20_idx.copy()
-        bw30 = self.densetc_plot.bw30_idx.copy()
-        bw40 = self.densetc_plot.bw40_idx.copy()
         continuous_bw = self.densetc_plot.continuous_bw_idx.copy()
         cf = self.densetc_plot.cf_idx
         thresh = self.densetc_plot.thresh_idx
@@ -374,10 +368,8 @@ class SiteScreen(Screen):
         # Update 'saved' values to current values.
         self.densetc_plot.saved_cf_idx = cf
         self.densetc_plot.saved_thresh_idx = thresh
-        self.densetc_plot.saved_bw10_idx = bw10
-        self.densetc_plot.saved_bw20_idx = bw20
-        self.densetc_plot.saved_bw30_idx = bw30
-        self.densetc_plot.saved_bw40_idx = bw40
+        bw = {lvl: v.copy() for lvl, v in self.densetc_plot.bw_idx.items()}
+        self.densetc_plot.saved_bw_idx = {lvl: v.copy() for lvl, v in bw.items()}
         self.densetc_plot.saved_continuous_bw_idx = continuous_bw
         self.densetc_plot.saved_onset = onset
         self.densetc_plot.saved_peak = peak
@@ -386,30 +378,14 @@ class SiteScreen(Screen):
         self.densetc_plot.saved_marked = marked
 
         # Finish analysis
-        if bw10[0] is not None:
-            bw10_khz = (frequencies[bw10] / 1000).tolist()
-            bw10_octave = afunc.get_bandwidth(*frequencies[bw10]).tolist()
-        else:
-            bw10_khz = [None, None]
-            bw10_octave = None
-        if bw20[0] is not None:
-            bw20_khz = (frequencies[bw20] / 1000).tolist()
-            bw20_octave = afunc.get_bandwidth(*frequencies[bw20]).tolist()
-        else:
-            bw20_khz = [None, None]
-            bw20_octave = None
-        if bw30[0] is not None:
-            bw30_khz = (frequencies[bw30] / 1000).tolist()
-            bw30_octave = afunc.get_bandwidth(*frequencies[bw30]).tolist()
-        else:
-            bw30_khz = [None, None]
-            bw30_octave = None
-        if bw40[0] is not None:
-            bw40_khz = (frequencies[bw40] / 1000).tolist()
-            bw40_octave = afunc.get_bandwidth(*frequencies[bw40]).tolist()
-        else:
-            bw40_khz = [None, None]
-            bw40_octave = None
+        bw_khz, bw_oct = {}, {}
+        for lvl in BW_LEVELS:
+            if bw[lvl][0] is not None:
+                bw_khz[lvl] = (frequencies[bw[lvl]] / 1000).tolist()
+                bw_oct[lvl] = afunc.get_bandwidth(*frequencies[bw[lvl]]).tolist()
+            else:
+                bw_khz[lvl] = [None, None]
+                bw_oct[lvl] = None
 
         if continuous_bw[0] is None:  
             # Site is being saved with new data, but cont. BW's haven't updated
@@ -419,9 +395,10 @@ class SiteScreen(Screen):
                 driven_offset_ms=offset,
                 spont_onset_ms=400 - (offset - onset),
                 spont_offset_ms=400)
-            _, _, cf, thresh, bw10, bw20, bw30, bw40, continuous_bw, _ = \
+            _, _, cf, thresh, *bws, continuous_bw, _ = \
                 afunc.ttest_analyze_tuning_curve(
                      afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts))
+            bw = dict(zip(BW_LEVELS, bws))
         try:  
             # Cont. BW should work now, but rare cases may still create an 
             # exception (eg. no regions found in auto-tc)
@@ -442,35 +419,28 @@ class SiteScreen(Screen):
 
         analysis_id = self.gui_instance.analysis_id
         site_number = self.map_number
+        update_doc = {
+            "cf_khz": cf_khz,
+            "threshold_db": thresh_db,
+            "cf_idx": cf,
+            "threshold_idx": thresh,
+            "continuous_bw_khz": continuous_bw_khz,
+            "continuous_bw_idx": continuous_bw,
+            "continuous_bw_octave": continuous_bw_octave,
+            "onset_ms": onset,
+            "peak_ms": peak,
+            "offset_ms": offset,
+            "peak_driven_rate_hz": peak_driven_rate,
+            "marked": marked,
+        }
+        for lvl in BW_LEVELS:
+            update_doc[f"bw{lvl}_idx"] = bw[lvl]
+            update_doc[f"bw{lvl}_khz"] = bw_khz[lvl]
+            update_doc[f"bw{lvl}_octave"] = bw_oct[lvl]
+
         self.gui_instance.densetc_analysis_collection.update_one(
-            {"analysis_id": analysis_id, 
-             "number": site_number},
-            {"$set": {
-                "cf_khz": cf_khz, 
-                "threshold_db": thresh_db, 
-                "cf_idx": cf,
-                "threshold_idx": thresh,
-                "bw10_khz": bw10_khz, 
-                "bw20_khz": bw20_khz, 
-                "bw30_khz": bw30_khz,
-                "bw40_khz": bw40_khz,
-                "bw10_idx": bw10,
-                "bw20_idx": bw20, 
-                "bw30_idx": bw30,
-                "bw40_idx": bw40,
-                "bw10_octave": bw10_octave,
-                "bw20_octave": bw20_octave,
-                "bw30_octave": bw30_octave, 
-                "bw40_octave": bw40_octave,
-                "continuous_bw_khz": continuous_bw_khz,
-                "continuous_bw_idx": continuous_bw,
-                "continuous_bw_octave": continuous_bw_octave,
-                "onset_ms": onset, 
-                "peak_ms": peak, 
-                "offset_ms": offset,
-                "peak_driven_rate_hz": peak_driven_rate,
-                "marked": marked,
-            }})
+            {"analysis_id": analysis_id, "number": site_number},
+            {"$set": update_doc})
 
         self.gui_instance.analysis_metadata_collection.update_one(
             {"_id": analysis_id},
@@ -490,10 +460,8 @@ class SiteScreen(Screen):
         self.gui_instance.plot_dict[self.map_number].onset = onset
         self.gui_instance.plot_dict[self.map_number].peak = peak
         self.gui_instance.plot_dict[self.map_number].offset = offset
-        self.gui_instance.plot_dict[self.map_number].bw10_idx = bw10
-        self.gui_instance.plot_dict[self.map_number].bw20_idx = bw20
-        self.gui_instance.plot_dict[self.map_number].bw30_idx = bw30
-        self.gui_instance.plot_dict[self.map_number].bw40_idx = bw40
+        self.gui_instance.plot_dict[self.map_number].bw_idx = \
+            {lvl: v.copy() for lvl, v in bw.items()}
         self.gui_instance.plot_dict[self.map_number].bubble_color = \
             self.densetc_plot.bubble_color
         self.gui_instance.plot_dict[self.map_number].lat_color = \
@@ -511,7 +479,7 @@ class SiteScreen(Screen):
             driven_offset_ms=offset,
             spont_onset_ms=400 - (offset - onset),
             spont_offset_ms=400)
-        smooth_tc, _, cf, thresh, bw10, bw20, bw30, bw40, continuous_bw, _ = \
+        smooth_tc, _, cf, thresh, *bws, continuous_bw, _ = \
             afunc.ttest_analyze_tuning_curve(
                 afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts))
 
@@ -519,10 +487,7 @@ class SiteScreen(Screen):
         # Data is NOT saved until user hits 'Save' button
         self.densetc_plot.cf_idx = cf
         self.densetc_plot.thresh_idx = thresh
-        self.densetc_plot.bw10_idx = bw10
-        self.densetc_plot.bw20_idx = bw20
-        self.densetc_plot.bw30_idx = bw30
-        self.densetc_plot.bw40_idx = bw40
+        self.densetc_plot.bw_idx = dict(zip(BW_LEVELS, bws))
         self.densetc_plot.continuous_bw_idx = continuous_bw
         smooth_tc[0 < smooth_tc] = 1
         self.densetc_plot.contour_tc = smooth_tc
