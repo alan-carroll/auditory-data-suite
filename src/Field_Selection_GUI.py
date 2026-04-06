@@ -1139,12 +1139,20 @@ class FieldSelectionGUI(BoxLayout):
 
     def load_map(self, _event):
         """Load a cortical auditory map."""
-        self._begin_load()
+        self._begin_load(is_ic=False)
 
-    def _begin_load(self):
+    def load_ic(self, _event):
+        """Load an inferior-colliculus auditory pseudo-map."""
+        self._begin_load(is_ic=True)
+
+    def _begin_load(self, is_ic):
         """
         Synchronous half of loading: pick the file, connect to the database,
         read project config, fetch site list.
+
+        `is_ic` picks between the cortical and inferior-colliculus code paths: 
+        different collection names, and IC fabricates pseudo-voronoi cells from
+        penetration depth instead of reading stored polygons.
 
         Hands off to _prompt_analysis() for the part that needs user choices.
         """
@@ -1162,17 +1170,33 @@ class FieldSelectionGUI(BoxLayout):
             os.path.splitext(os.path.basename(self.map_file_path))[0])
         self.map_metadata_collection = self.subject_database.metadata
         self.map_metadata = self.map_metadata_collection.find_one({})
-        self.sites_collection = self.subject_database.sites
-        self.densetc_data_collection = self.subject_database.densetc_data
-        self.densetc_analysis_collection = \
-            self.subject_database.densetc_analysis
         self.analysis_metadata_collection = \
             self.subject_database.analysis_metadata
-        # Cortical loads IC as the "bonus" collection so that creating a new
-        # analysis clones both. See load_ic for the mirror. An empty bonus
-        # collection is harmless if the project has no IC data.
-        self.bonus_analysis_collection = \
-            self.subject_database.densetc_IC_analysis
+
+        if is_ic:
+            # IC has no stored map dimensions or voronoi polygons, so we make
+            # them up. 3000×1000 is just "tall and narrow" to suit a depth
+            # column. These overrides don't persist back to the database.
+            self.map_metadata["map_height"] = 3000
+            self.map_metadata["map_width"] = 1000
+            self.densetc_data_collection = \
+                self.subject_database.densetc_IC_data
+            self.densetc_analysis_collection = \
+                self.subject_database.densetc_IC_analysis
+            # Mirror of the cortical branch: bonus = cortical, so creating
+            # a new analysis from an IC load clones the cortical side too.
+            self.bonus_analysis_collection = \
+                self.subject_database.densetc_analysis
+        else:
+            self.sites_collection = self.subject_database.sites
+            self.densetc_data_collection = self.subject_database.densetc_data
+            self.densetc_analysis_collection = \
+                self.subject_database.densetc_analysis
+            # Cortical loads IC as the "bonus" collection so that creating a new
+            # analysis clones both. An empty bonus collection is harmless if the 
+            # project has no IC data.
+            self.bonus_analysis_collection = \
+                self.subject_database.densetc_IC_analysis
 
         # --- Project configuration --------------------------------------
         # Expect exactly one analysis metadata doc to carry a configuration
@@ -1191,10 +1215,12 @@ class FieldSelectionGUI(BoxLayout):
         self.num_intensity = len(self.intensity)
         self.num_tones = self.project_configuration["densetc_num_tones"]
 
-        # --- Site list ---------------------------------------------------
-        self.sites = list(self.sites_collection.find({}))
+        # --- Site list ----------------------------------------------------
+        if is_ic:
+            self.sites = self._build_ic_pseudo_sites()
+        else:
+            self.sites = list(self.sites_collection.find({}))
 
-        # --- Hand off to the async part ---------------------------------
         self._prompt_analysis()
 
     def _prompt_analysis(self):
@@ -1267,167 +1293,60 @@ class FieldSelectionGUI(BoxLayout):
         self.display_map()
         print("\n *** Ready! *** \n")
 
-    def load_ic(self, _event):
-        """Load inferior-colliculus auditory 'map'."""
-        # Identical to load_map except it handles IC data analysis
-        # Instead of loading voronoi polygons, this creates a 'pseudo-map'
-        # based on IC depth
-        self.ic_bool = True
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Load Data", 
-                            "Select .json IC database for subject.")
-        self.map_file_path = afunc.get_file(title="Select database JSON file", 
-                                            filetypes=[("JSON", ".json")])
-        if (self.map_file_path is None) or (self.map_file_path == ""):
-            return
-        # Initialize tinymongo database
-        self.mongo_connection = TinyMongoClient(
-            os.path.dirname(self.map_file_path))
-        self.subject_database = getattr(self.mongo_connection,
-                                        os.path.splitext(
-                                            os.path.basename(
-                                                self.map_file_path))[0])
-        self.map_metadata_collection = self.subject_database.metadata
-        self.map_metadata = self.map_metadata_collection.find_one({})
+    def _build_ic_pseudo_sites(self):
+        """
+        IC recordings have a depth per site but no spatial map. Fabricate a
+        two-column pseudo-voronoi: odd-numbered sites in the left column,
+        even in the right, ordered top-to-bottom by depth so shallow
+        (low-frequency) IC sits at the top.
 
-        # For IC, map 'height' and 'width' are fabricated. Has no impact on
-        # underlying map_metadata storage
-        self.map_metadata["map_height"] = 3000
-        self.map_metadata["map_width"] = 1000
+        Cell heights come from inter-site depth spacing, which usually
+        alternates ~0, ~200, ~0, ~200 (two sites per depth). We take the
+        per-depth max to skip the zeros, then backfill the topmost site(s)
+        which have nothing before them to diff against.
+        """
+        ic_sites = [
+            {"number": int(s["number"]), "depth": int(s["depth"])}
+            for s in self.densetc_data_collection.find({})
+        ]
+        df = pd.DataFrame(ic_sites).sort_values("depth").reset_index(drop=True)
 
-        # 'sites' normally contain map number, xy and voronoi coords. 
-        # For IC we fabricate polygons using 'depth' info
-        self.densetc_data_collection = self.subject_database.densetc_IC_data
-        ic_sites = [{"number": int(site["number"]), 
-                     "depth": int(site["depth"])} for site in 
-                    self.densetc_data_collection.find({})]
-        ic_df = pd.DataFrame(ic_sites)
-        ic_df = ic_df.sort_values("depth")
-        ic_df = ic_df.reset_index(drop=True)
-        pseudo_odd_x = 0.25
-        pseudo_even_x = 0.75
-        ic_df["x"] = ic_df["number"].apply(lambda x: 
-            pseudo_odd_x if x % 2 else pseudo_even_x)
-        ic_df["y"] = ic_df["depth"]
-        ic_df["inter_depth"] = ic_df["y"].diff()
-        # Typical IC map has 2x sites per depth, so inter_depth likely 
-        # alternates 0, ~200, 0, ~200
-        # To remove the zeros, but still allow for odd sites that don't have 2x 
-        # sites per depth, we take max inter_depth per depth
-        ic_df["inter_depth"] = ic_df["y"].apply(lambda x: 
-            ic_df.loc[ic_df["y"] == x, "inter_depth"].max())
-        # The first site(s) will have inter_depth==0 because nothing is before 
-        # them to take a difference with
-        # Changing the 0 to NaN allows us to backfill an inter_depth value from
-        # the site(s) directly in front of them
-        ic_df.loc[ic_df["inter_depth"] == 0, "inter_depth"] = np.nan
-        ic_df["inter_depth"] = ic_df["inter_depth"].fillna(method="bfill")
-        ic_df["vert_up"] = ic_df["y"] - (ic_df["inter_depth"] / 2)
-        ic_df["vert_down"] = ic_df["y"] + (ic_df["inter_depth"] / 2)
-        # Multiply 'depth coordinates' by -1 and then normalize between 
-        # 0 and 1. When displayed, the most shallow sites (low-freq IC) will 
-        # correctly be at the top, and the deepest (high-freq) at the bottom
-        ic_df[["y", "vert_up", "vert_down"]] = -ic_df[
-            ["y", "vert_up", "vert_down"]]
-        min_coord = ic_df["vert_down"].min()
-        max_coord = ic_df["vert_up"].max()
-        ic_df[["y", "vert_up", "vert_down"]] = (
-            (ic_df[["y", "vert_up", "vert_down"]] - min_coord) / 
-            (max_coord - min_coord))
+        odd_x, even_x = 0.25, 0.75
+        df["x"] = df["number"].apply(lambda n: odd_x if n % 2 else even_x)
+        df["y"] = df["depth"]
 
-        ic_sites = ic_df.to_dict("records")
+        df["inter_depth"] = df["y"].diff()
+        # Two sites per depth → diff alternates 0, ~200. Max-per-depth skips
+        # the zeros while tolerating the odd depth with only one site.
+        df["inter_depth"] = df["y"].apply(
+            lambda y: df.loc[df["y"] == y, "inter_depth"].max())
+        # Top site(s) have no prior depth to diff → 0 → NaN → backfill.
+        df.loc[df["inter_depth"] == 0, "inter_depth"] = np.nan
+        df["inter_depth"] = df["inter_depth"].bfill()
 
-        self.sites = []
-        for site in ic_sites:
-            site["voronoi_centroid"] = [site["x"], site["y"]]
-            if site["x"] == pseudo_odd_x:
-                site["voronoi_vertices"] = [(0, site["vert_down"]), 
-                                            (0, site["vert_up"]),
-                                            (0.5, site["vert_up"]), 
-                                            (0.5, site["vert_down"])]
+        df["vert_up"] = df["y"] - df["inter_depth"] / 2
+        df["vert_down"] = df["y"] + df["inter_depth"] / 2
+
+        # Flip (depth increases downward on the probe but we want shallow at
+        # the top of the display) then normalize to [0, 1].
+        df[["y", "vert_up", "vert_down"]] *= -1
+        lo, hi = df["vert_down"].min(), df["vert_up"].max()
+        df[["y", "vert_up", "vert_down"]] = (
+            (df[["y", "vert_up", "vert_down"]] - lo) / (hi - lo))
+
+        sites = []
+        for s in df.to_dict("records"):
+            s["voronoi_centroid"] = [s["x"], s["y"]]
+            if s["x"] == odd_x:
+                s["voronoi_vertices"] = [
+                    (0,   s["vert_down"]), (0,   s["vert_up"]),
+                    (0.5, s["vert_up"]),   (0.5, s["vert_down"])]
             else:
-                site["voronoi_vertices"] = [(0.5, site["vert_down"]),
-                                            (0.5, site["vert_up"]),
-                                            (1, site["vert_up"]), 
-                                            (1, site["vert_down"])]
-
-            self.sites.append(site)
-
-        self.densetc_analysis_collection = \
-            self.subject_database.densetc_IC_analysis
-        self.analysis_metadata_collection = \
-            self.subject_database.analysis_metadata
-        # TODO Fix. See cortical loading todo above
-        # Cortical one loads IC as bonus
-        self.bonus_analysis_collection = self.subject_database.densetc_analysis
-
-        self.project_configuration = \
-            self.analysis_metadata_collection.find_one(
-                {"configuration": {"$ne": False}})["configuration"]
-        # Just in case it is unsorted
-        self.frequency = np.sort(
-            self.project_configuration["densetc_frequency_hz"])
-        self.intensity = np.sort(
-            self.project_configuration["densetc_intensity_db"])
-        self.num_frequency = len(self.frequency)
-        self.num_intensity = len(self.intensity)
-        self.num_tones = self.project_configuration["densetc_num_tones"]
-
-        # Load an existing analysis to keep working on, or create a new 
-        # analysis from an existing one
-        # TODO Allow possibility of raw data analysis from scratch
-        analysis_loaded = False
-        while not analysis_loaded:
-            analysis_selection, create_new_analysis = \
-                afunc.load_analysis(self.analysis_metadata_collection)
-            if analysis_selection is None:
-                # Menu exited without selection
-                return
-            else:
-                # load_analysis returns Series with analysis metadata, 
-                # and whether or not to create a new analysis
-                if create_new_analysis:
-                    new_analysis_metadata = \
-                        afunc.new_analysis_metadata_document()
-                    if new_analysis_metadata is None:
-                        # User hit cancel. Re-prompt to load analysis
-                        continue
-                    template_id = analysis_selection["_id"]
-                    self.analysis_id = afunc.create_new_densetc_analysis(
-                        template_id,
-                        new_analysis_metadata,
-                        self.analysis_metadata_collection,
-                        self.densetc_analysis_collection,
-                        self.bonus_analysis_collection)
-                else:
-                    self.analysis_id = analysis_selection["_id"]
-                    analysis_loaded = True
-
-        # Grab all data and analysis upfront and parse into dicts. 
-        # MUCH faster than each site individually searching.
-        # Keys are site numbers.
-        self.densetc_data = {data["number"]: data for data in 
-                             self.densetc_data_collection.find({})}
-        self.densetc_analysis = {analysis["number"]: analysis for analysis in
-                                 self.densetc_analysis_collection.find(
-                                     {"analysis_id": self.analysis_id})}
-
-        try:
-            # TODO Allow loading new maps
-            self.clear_map()
-        except Exception as e:
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("General error", 
-                                 "Error occurred while trying to display map. "
-                                 "Were the correct files selected?")
-            logging.exception(e)
-            root.destroy()
-
-        self.display_map()
-        print("\n *** Ready! *** \n")
-        root.destroy()
+                s["voronoi_vertices"] = [
+                    (0.5, s["vert_down"]), (0.5, s["vert_up"]),
+                    (1,   s["vert_up"]),   (1,   s["vert_down"])]
+            sites.append(s)
+        return sites
 
     def display_map(self):
         """Generate map visuals."""
