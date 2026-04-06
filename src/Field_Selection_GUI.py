@@ -623,6 +623,8 @@ class FieldSelectionGUI(BoxLayout):
         self.densetc_analysis = None
         self.analysis_id = ""
 
+        self._pending_template_id = None  # stash between picker and metadata popups
+
         self.mongo_connection = None
         self.counter = 0
         self.site_screens = {}
@@ -1136,25 +1138,28 @@ class FieldSelectionGUI(BoxLayout):
             fig.size = (fig.width * 0.75, fig.height * 0.75)
 
     def load_map(self, _event):
-        """Load cortical auditory map."""
-        # TODO break out creating a new analysis as a separate function so I 
-        #   don't repeat between cortical and IC funcs
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Load Data", 
-                            "Select .json Map database for subject.")
-        self.map_file_path = afunc.get_file(title="Select database JSON file", 
-                                            filetypes=[("JSON", ".json")])
-        if (self.map_file_path is None) or (self.map_file_path == ""):
+        """Load a cortical auditory map."""
+        self._begin_load()
+
+    def _begin_load(self):
+        """
+        Synchronous half of loading: pick the file, connect to the database,
+        read project config, fetch site list.
+
+        Hands off to _prompt_analysis() for the part that needs user choices.
+        """
+        path = afunc.get_file(title="Select database JSON file",
+                              filetypes=[("JSON", ".json")])
+        if not path:
             return
-        # Initialize tinymongo database
+        self.map_file_path = path
+
+        # --- DB connection & collection handles -------------------------
         self.mongo_connection = TinyMongoClient(
             os.path.dirname(self.map_file_path))
-        self.subject_database = getattr(self.mongo_connection,
-                                        os.path.splitext(
-                                            os.path.basename(
-                                                self.map_file_path)
-                                            )[0])
+        self.subject_database = getattr(
+            self.mongo_connection,
+            os.path.splitext(os.path.basename(self.map_file_path))[0])
         self.map_metadata_collection = self.subject_database.metadata
         self.map_metadata = self.map_metadata_collection.find_one({})
         self.sites_collection = self.subject_database.sites
@@ -1163,31 +1168,21 @@ class FieldSelectionGUI(BoxLayout):
             self.subject_database.densetc_analysis
         self.analysis_metadata_collection = \
             self.subject_database.analysis_metadata
-        # TODO hacky way to duplicate be able to create new IC analysis with
-        # new cortical analysis. Fix later.
-        # IC version will replace with cortical one so that if creating new 
-        # from IC then cortical is also created.
-        # If there is no IC data/analysis (even a non-IC project) the 
-        # collection is still created, but has no impact on the functionality 
-        # of everything else. It will just be empty collections.
+        # Cortical loads IC as the "bonus" collection so that creating a new
+        # analysis clones both. See load_ic for the mirror. An empty bonus
+        # collection is harmless if the project has no IC data.
         self.bonus_analysis_collection = \
             self.subject_database.densetc_IC_analysis
 
-        # Load project configuration information. Expect only 1 config result, 
-        # or that all stored configs are redundant.
-        # Currently just grabbing very first analysis that has a config (which 
-        # for me is just the auto analysis program)
-        # $exists is mongo operator I want, but it is not implemented in 
-        # tinymongo. Using $ne is just a hacky way of doing the same thing -- 
-        # find_one will only return documents given that the field 
-        # 'configuration' exists. The operator $ne is always true against the 
-        # data 'configuration' holds, so as long as the field exists in a
-        # document, it will be returned. If a document doesn't have the field,
-        # it will be skipped.
+        # --- Project configuration --------------------------------------
+        # Expect exactly one analysis metadata doc to carry a configuration
+        # (the auto-analysis run). $exists is what we want but tinymongo
+        # doesn't implement it; $ne against a value the field never holds is
+        # a cheap substitute; any doc with the field matches, any doc
+        # without it is skipped.
         self.project_configuration = \
             self.analysis_metadata_collection.find_one(
                 {"configuration": {"$ne": False}})["configuration"]
-        # Just in case it is unsorted
         self.frequency = np.sort(
             self.project_configuration["densetc_frequency_hz"])
         self.intensity = np.sort(
@@ -1196,63 +1191,81 @@ class FieldSelectionGUI(BoxLayout):
         self.num_intensity = len(self.intensity)
         self.num_tones = self.project_configuration["densetc_num_tones"]
 
-        # Grab voronoi data to draw map
-        self.sites = [site for site in self.sites_collection.find({})]
+        # --- Site list ---------------------------------------------------
+        self.sites = list(self.sites_collection.find({}))
 
-        # Load an existing analysis to keep working on, or create a new 
-        # analysis from an existing one
-        # TODO Allow possibility of raw data analysis from scratch
-        analysis_loaded = False
-        while not analysis_loaded:
-            analysis_selection, create_new_analysis = \
-                afunc.load_analysis(self.analysis_metadata_collection)
-            if analysis_selection is None:
-                # Menu exited without selection
-                return
-            else:
-                # load_analysis returns Series with analysis metadata, 
-                # and whether or not to create a new analysis
-                if create_new_analysis:
-                    new_analysis_metadata = \
-                        afunc.new_analysis_metadata_document()
-                    if new_analysis_metadata is None:
-                        # User hit cancel. Re-prompt to load analysis
-                        continue
-                    template_id = analysis_selection["_id"]
-                    self.analysis_id = afunc.create_new_densetc_analysis(
-                        template_id,
-                        new_analysis_metadata,
-                        self.analysis_metadata_collection,
-                        self.densetc_analysis_collection,
-                        self.bonus_analysis_collection)
-                else:
-                    self.analysis_id = analysis_selection["_id"]
-                    analysis_loaded = True
+        # --- Hand off to the async part ---------------------------------
+        self._prompt_analysis()
 
-        # Grab all data and analysis upfront and parse into dicts. MUCH faster 
-        # than each site individually searching.
-        # Keys are site numbers.
-        self.densetc_data = {data["number"]: data for data in 
-                             self.densetc_data_collection.find({})}
-        self.densetc_analysis = {analysis["number"]: analysis for analysis in
-                                 self.densetc_analysis_collection.find(
-                                     {"analysis_id": self.analysis_id})}
+    def _prompt_analysis(self):
+        """
+        Open the analysis picker.
+        """
+        analyses = pd.DataFrame(
+            list(self.analysis_metadata_collection.find({})))
+        popup = AnalysisPickerPopup(analyses)
+        popup.bind(on_pick=self._on_analysis_picked)
+        popup.bind(on_cancel=self._on_analysis_cancelled)
+        popup.open()
+
+    def _on_analysis_picked(self, _popup, selection, create_new):
+        if not create_new:
+            self.analysis_id = selection["_id"]
+            self._finish_load()
+            return
+        # Stash the template id, then collect name/comments.
+        self._pending_template_id = selection["_id"]
+        meta_popup = NewAnalysisMetadataPopup()
+        meta_popup.bind(on_submit=self._on_new_metadata)
+        meta_popup.bind(on_cancel=lambda *_: self._prompt_analysis())
+        meta_popup.open()
+
+    def _on_new_metadata(self, _popup, name, comments):
+        meta = afunc.build_analysis_metadata(name, comments)
+        self.analysis_id = afunc.create_new_densetc_analysis(
+            self._pending_template_id,
+            meta,
+            self.analysis_metadata_collection,
+            self.densetc_analysis_collection,
+            self.bonus_analysis_collection)
+        self._finish_load()
+
+    def _on_analysis_cancelled(self, *_):
+        """
+        User backed out of the picker entirely. DB handles and config are
+        already set on self but no analysis was chosen, map_loaded stays
+        False, and display_map never runs, so the canvas stays blank.
+        """
+        pass
+
+    def _finish_load(self):
+        """
+        Everything after the analysis is chosen: fetch the data and
+        analysis dicts (keyed by site number, much faster than each
+        SitePlot querying individually), clear any previous map (TODO), render.
+        """
+        self.densetc_data = {
+            d["number"]: d
+            for d in self.densetc_data_collection.find({})
+        }
+        self.densetc_analysis = {
+            a["number"]: a
+            for a in self.densetc_analysis_collection.find(
+                {"analysis_id": self.analysis_id})
+        }
 
         try:
-            # TODO Allow loading new maps
+            # TODO clear_map is a no-op — see issue #12 (load new map
+            # without restart).
             self.clear_map()
         except Exception as e:
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("General error", 
-                                 "Error occurred while trying to display map. "
-                                 "Were the correct files selected?")
             logging.exception(e)
-            root.destroy()
+            InfoPopup("Error",
+                      "Error occurred while trying to display map. "
+                      "Were the correct files selected?").open()
 
         self.display_map()
         print("\n *** Ready! *** \n")
-        root.destroy()
 
     def load_ic(self, _event):
         """Load inferior-colliculus auditory 'map'."""
