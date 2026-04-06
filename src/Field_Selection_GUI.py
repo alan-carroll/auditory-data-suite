@@ -17,6 +17,8 @@ from kivy.uix.stacklayout import StackLayout
 from kivy.uix.spinner import Spinner
 from kivy.uix.label import Label
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.popup import Popup
+from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
 from matplotlib.path import Path as MplPath
@@ -24,8 +26,6 @@ import pandas as pd
 import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
 from kivy.uix.screenmanager import Screen, ScreenManager
-import tkinter as tk
-from tkinter import messagebox
 import logging
 from kivy.uix.slider import Slider
 import analysis_functions as afunc
@@ -621,6 +621,8 @@ class FieldSelectionGUI(BoxLayout):
         self.densetc_analysis = None
         self.analysis_id = ""
 
+        self._pending_template_id = None  # stash between picker and metadata popups
+
         self.mongo_connection = None
         self.counter = 0
         self.site_screens = {}
@@ -1118,10 +1120,7 @@ class FieldSelectionGUI(BoxLayout):
                     "last_modified": today
                 }})
 
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo("Success!", "Fields / Marks saved!")
-            root.destroy()
+            InfoPopup("Success", "Fields / Marks saved!").open()
 
     def increase_figsize(self, _event):
         """Increase matplotlib figure size."""
@@ -1134,223 +1133,75 @@ class FieldSelectionGUI(BoxLayout):
             fig.size = (fig.width * 0.75, fig.height * 0.75)
 
     def load_map(self, _event):
-        """Load cortical auditory map."""
-        # TODO break out creating a new analysis as a separate function so I 
-        #   don't repeat between cortical and IC funcs
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Load Data", 
-                            "Select .json Map database for subject.")
-        self.map_file_path = afunc.get_file(title="Select database JSON file", 
-                                            filetypes=[("JSON", ".json")])
-        if (self.map_file_path is None) or (self.map_file_path == ""):
-            return
-        # Initialize tinymongo database
-        self.mongo_connection = TinyMongoClient(
-            os.path.dirname(self.map_file_path))
-        self.subject_database = getattr(self.mongo_connection,
-                                        os.path.splitext(
-                                            os.path.basename(
-                                                self.map_file_path)
-                                            )[0])
-        self.map_metadata_collection = self.subject_database.metadata
-        self.map_metadata = self.map_metadata_collection.find_one({})
-        self.sites_collection = self.subject_database.sites
-        self.densetc_data_collection = self.subject_database.densetc_data
-        self.densetc_analysis_collection = \
-            self.subject_database.densetc_analysis
-        self.analysis_metadata_collection = \
-            self.subject_database.analysis_metadata
-        # TODO hacky way to duplicate be able to create new IC analysis with
-        # new cortical analysis. Fix later.
-        # IC version will replace with cortical one so that if creating new 
-        # from IC then cortical is also created.
-        # If there is no IC data/analysis (even a non-IC project) the 
-        # collection is still created, but has no impact on the functionality 
-        # of everything else. It will just be empty collections.
-        self.bonus_analysis_collection = \
-            self.subject_database.densetc_IC_analysis
-
-        # Load project configuration information. Expect only 1 config result, 
-        # or that all stored configs are redundant.
-        # Currently just grabbing very first analysis that has a config (which 
-        # for me is just the auto analysis program)
-        # $exists is mongo operator I want, but it is not implemented in 
-        # tinymongo. Using $ne is just a hacky way of doing the same thing -- 
-        # find_one will only return documents given that the field 
-        # 'configuration' exists. The operator $ne is always true against the 
-        # data 'configuration' holds, so as long as the field exists in a
-        # document, it will be returned. If a document doesn't have the field,
-        # it will be skipped.
-        self.project_configuration = \
-            self.analysis_metadata_collection.find_one(
-                {"configuration": {"$ne": False}})["configuration"]
-        # Just in case it is unsorted
-        self.frequency = np.sort(
-            self.project_configuration["densetc_frequency_hz"])
-        self.intensity = np.sort(
-            self.project_configuration["densetc_intensity_db"])
-        self.num_frequency = len(self.frequency)
-        self.num_intensity = len(self.intensity)
-        self.num_tones = self.project_configuration["densetc_num_tones"]
-
-        # Grab voronoi data to draw map
-        self.sites = [site for site in self.sites_collection.find({})]
-
-        # Load an existing analysis to keep working on, or create a new 
-        # analysis from an existing one
-        # TODO Allow possibility of raw data analysis from scratch
-        analysis_loaded = False
-        while not analysis_loaded:
-            analysis_selection, create_new_analysis = \
-                afunc.load_analysis(self.analysis_metadata_collection)
-            if analysis_selection is None:
-                # Menu exited without selection
-                return
-            else:
-                # load_analysis returns Series with analysis metadata, 
-                # and whether or not to create a new analysis
-                if create_new_analysis:
-                    new_analysis_metadata = \
-                        afunc.new_analysis_metadata_document()
-                    if new_analysis_metadata is None:
-                        # User hit cancel. Re-prompt to load analysis
-                        continue
-                    template_id = analysis_selection["_id"]
-                    self.analysis_id = afunc.create_new_densetc_analysis(
-                        template_id,
-                        new_analysis_metadata,
-                        self.analysis_metadata_collection,
-                        self.densetc_analysis_collection,
-                        self.bonus_analysis_collection)
-                else:
-                    self.analysis_id = analysis_selection["_id"]
-                    analysis_loaded = True
-
-        # Grab all data and analysis upfront and parse into dicts. MUCH faster 
-        # than each site individually searching.
-        # Keys are site numbers.
-        self.densetc_data = {data["number"]: data for data in 
-                             self.densetc_data_collection.find({})}
-        self.densetc_analysis = {analysis["number"]: analysis for analysis in
-                                 self.densetc_analysis_collection.find(
-                                     {"analysis_id": self.analysis_id})}
-
-        try:
-            # TODO Allow loading new maps
-            self.clear_map()
-        except Exception as e:
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("General error", 
-                                 "Error occurred while trying to display map. "
-                                 "Were the correct files selected?")
-            logging.exception(e)
-            root.destroy()
-
-        self.display_map()
-        print("\n *** Ready! *** \n")
-        root.destroy()
+        """Load a cortical auditory map."""
+        self._begin_load(is_ic=False)
 
     def load_ic(self, _event):
-        """Load inferior-colliculus auditory 'map'."""
-        # Identical to load_map except it handles IC data analysis
-        # Instead of loading voronoi polygons, this creates a 'pseudo-map'
-        # based on IC depth
-        self.ic_bool = True
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Load Data", 
-                            "Select .json IC database for subject.")
-        self.map_file_path = afunc.get_file(title="Select database JSON file", 
-                                            filetypes=[("JSON", ".json")])
-        if (self.map_file_path is None) or (self.map_file_path == ""):
+        """Load an inferior-colliculus auditory pseudo-map."""
+        self._begin_load(is_ic=True)
+
+    def _begin_load(self, is_ic):
+        """
+        Synchronous half of loading: pick the file, connect to the database,
+        read project config, fetch site list.
+
+        `is_ic` picks between the cortical and inferior-colliculus code paths: 
+        different collection names, and IC fabricates pseudo-voronoi cells from
+        penetration depth instead of reading stored polygons.
+
+        Hands off to _prompt_analysis() for the part that needs user choices.
+        """
+        path = afunc.get_file(title="Select database JSON file",
+                              filetypes=[("JSON", ".json")])
+        if not path:
             return
-        # Initialize tinymongo database
+        self.map_file_path = path
+
+        # --- DB connection & collection handles -------------------------
         self.mongo_connection = TinyMongoClient(
             os.path.dirname(self.map_file_path))
-        self.subject_database = getattr(self.mongo_connection,
-                                        os.path.splitext(
-                                            os.path.basename(
-                                                self.map_file_path))[0])
+        self.subject_database = getattr(
+            self.mongo_connection,
+            os.path.splitext(os.path.basename(self.map_file_path))[0])
         self.map_metadata_collection = self.subject_database.metadata
         self.map_metadata = self.map_metadata_collection.find_one({})
-
-        # For IC, map 'height' and 'width' are fabricated. Has no impact on
-        # underlying map_metadata storage
-        self.map_metadata["map_height"] = 3000
-        self.map_metadata["map_width"] = 1000
-
-        # 'sites' normally contain map number, xy and voronoi coords. 
-        # For IC we fabricate polygons using 'depth' info
-        self.densetc_data_collection = self.subject_database.densetc_IC_data
-        ic_sites = [{"number": int(site["number"]), 
-                     "depth": int(site["depth"])} for site in 
-                    self.densetc_data_collection.find({})]
-        ic_df = pd.DataFrame(ic_sites)
-        ic_df = ic_df.sort_values("depth")
-        ic_df = ic_df.reset_index(drop=True)
-        pseudo_odd_x = 0.25
-        pseudo_even_x = 0.75
-        ic_df["x"] = ic_df["number"].apply(lambda x: 
-            pseudo_odd_x if x % 2 else pseudo_even_x)
-        ic_df["y"] = ic_df["depth"]
-        ic_df["inter_depth"] = ic_df["y"].diff()
-        # Typical IC map has 2x sites per depth, so inter_depth likely 
-        # alternates 0, ~200, 0, ~200
-        # To remove the zeros, but still allow for odd sites that don't have 2x 
-        # sites per depth, we take max inter_depth per depth
-        ic_df["inter_depth"] = ic_df["y"].apply(lambda x: 
-            ic_df.loc[ic_df["y"] == x, "inter_depth"].max())
-        # The first site(s) will have inter_depth==0 because nothing is before 
-        # them to take a difference with
-        # Changing the 0 to NaN allows us to backfill an inter_depth value from
-        # the site(s) directly in front of them
-        ic_df.loc[ic_df["inter_depth"] == 0, "inter_depth"] = np.nan
-        ic_df["inter_depth"] = ic_df["inter_depth"].fillna(method="bfill")
-        ic_df["vert_up"] = ic_df["y"] - (ic_df["inter_depth"] / 2)
-        ic_df["vert_down"] = ic_df["y"] + (ic_df["inter_depth"] / 2)
-        # Multiply 'depth coordinates' by -1 and then normalize between 
-        # 0 and 1. When displayed, the most shallow sites (low-freq IC) will 
-        # correctly be at the top, and the deepest (high-freq) at the bottom
-        ic_df[["y", "vert_up", "vert_down"]] = -ic_df[
-            ["y", "vert_up", "vert_down"]]
-        min_coord = ic_df["vert_down"].min()
-        max_coord = ic_df["vert_up"].max()
-        ic_df[["y", "vert_up", "vert_down"]] = (
-            (ic_df[["y", "vert_up", "vert_down"]] - min_coord) / 
-            (max_coord - min_coord))
-
-        ic_sites = ic_df.to_dict("records")
-
-        self.sites = []
-        for site in ic_sites:
-            site["voronoi_centroid"] = [site["x"], site["y"]]
-            if site["x"] == pseudo_odd_x:
-                site["voronoi_vertices"] = [(0, site["vert_down"]), 
-                                            (0, site["vert_up"]),
-                                            (0.5, site["vert_up"]), 
-                                            (0.5, site["vert_down"])]
-            else:
-                site["voronoi_vertices"] = [(0.5, site["vert_down"]),
-                                            (0.5, site["vert_up"]),
-                                            (1, site["vert_up"]), 
-                                            (1, site["vert_down"])]
-
-            self.sites.append(site)
-
-        self.densetc_analysis_collection = \
-            self.subject_database.densetc_IC_analysis
         self.analysis_metadata_collection = \
             self.subject_database.analysis_metadata
-        # TODO Fix. See cortical loading todo above
-        # Cortical one loads IC as bonus
-        self.bonus_analysis_collection = self.subject_database.densetc_analysis
 
+        if is_ic:
+            # IC has no stored map dimensions or voronoi polygons, so we make
+            # them up. 3000×1000 is just "tall and narrow" to suit a depth
+            # column. These overrides don't persist back to the database.
+            self.map_metadata["map_height"] = 3000
+            self.map_metadata["map_width"] = 1000
+            self.densetc_data_collection = \
+                self.subject_database.densetc_IC_data
+            self.densetc_analysis_collection = \
+                self.subject_database.densetc_IC_analysis
+            # Mirror of the cortical branch: bonus = cortical, so creating
+            # a new analysis from an IC load clones the cortical side too.
+            self.bonus_analysis_collection = \
+                self.subject_database.densetc_analysis
+        else:
+            self.sites_collection = self.subject_database.sites
+            self.densetc_data_collection = self.subject_database.densetc_data
+            self.densetc_analysis_collection = \
+                self.subject_database.densetc_analysis
+            # Cortical loads IC as the "bonus" collection so that creating a new
+            # analysis clones both. An empty bonus collection is harmless if the 
+            # project has no IC data.
+            self.bonus_analysis_collection = \
+                self.subject_database.densetc_IC_analysis
+
+        # --- Project configuration --------------------------------------
+        # Expect exactly one analysis metadata doc to carry a configuration
+        # (the auto-analysis run). $exists is what we want but tinymongo
+        # doesn't implement it; $ne against a value the field never holds is
+        # a cheap substitute; any doc with the field matches, any doc
+        # without it is skipped.
         self.project_configuration = \
             self.analysis_metadata_collection.find_one(
                 {"configuration": {"$ne": False}})["configuration"]
-        # Just in case it is unsorted
         self.frequency = np.sort(
             self.project_configuration["densetc_frequency_hz"])
         self.intensity = np.sort(
@@ -1359,60 +1210,138 @@ class FieldSelectionGUI(BoxLayout):
         self.num_intensity = len(self.intensity)
         self.num_tones = self.project_configuration["densetc_num_tones"]
 
-        # Load an existing analysis to keep working on, or create a new 
-        # analysis from an existing one
-        # TODO Allow possibility of raw data analysis from scratch
-        analysis_loaded = False
-        while not analysis_loaded:
-            analysis_selection, create_new_analysis = \
-                afunc.load_analysis(self.analysis_metadata_collection)
-            if analysis_selection is None:
-                # Menu exited without selection
-                return
-            else:
-                # load_analysis returns Series with analysis metadata, 
-                # and whether or not to create a new analysis
-                if create_new_analysis:
-                    new_analysis_metadata = \
-                        afunc.new_analysis_metadata_document()
-                    if new_analysis_metadata is None:
-                        # User hit cancel. Re-prompt to load analysis
-                        continue
-                    template_id = analysis_selection["_id"]
-                    self.analysis_id = afunc.create_new_densetc_analysis(
-                        template_id,
-                        new_analysis_metadata,
-                        self.analysis_metadata_collection,
-                        self.densetc_analysis_collection,
-                        self.bonus_analysis_collection)
-                else:
-                    self.analysis_id = analysis_selection["_id"]
-                    analysis_loaded = True
+        # --- Site list ----------------------------------------------------
+        if is_ic:
+            self.sites = self._build_ic_pseudo_sites()
+        else:
+            self.sites = list(self.sites_collection.find({}))
 
-        # Grab all data and analysis upfront and parse into dicts. 
-        # MUCH faster than each site individually searching.
-        # Keys are site numbers.
-        self.densetc_data = {data["number"]: data for data in 
-                             self.densetc_data_collection.find({})}
-        self.densetc_analysis = {analysis["number"]: analysis for analysis in
-                                 self.densetc_analysis_collection.find(
-                                     {"analysis_id": self.analysis_id})}
+        self._prompt_analysis()
+
+    def _prompt_analysis(self):
+        """
+        Open the analysis picker.
+        """
+        analyses = pd.DataFrame(
+            list(self.analysis_metadata_collection.find({})))
+        popup = AnalysisPickerPopup(analyses)
+        popup.bind(on_pick=self._on_analysis_picked)
+        popup.bind(on_cancel=self._on_analysis_cancelled)
+        popup.open()
+
+    def _on_analysis_picked(self, _popup, selection, create_new):
+        if not create_new:
+            self.analysis_id = selection["_id"]
+            self._finish_load()
+            return
+        # Stash the template id, then collect name/comments.
+        self._pending_template_id = selection["_id"]
+        meta_popup = NewAnalysisMetadataPopup()
+        meta_popup.bind(on_submit=self._on_new_metadata)
+        meta_popup.bind(on_cancel=lambda *_: self._prompt_analysis())
+        meta_popup.open()
+
+    def _on_new_metadata(self, _popup, name, comments):
+        meta = afunc.build_analysis_metadata(name, comments)
+        self.analysis_id = afunc.create_new_densetc_analysis(
+            self._pending_template_id,
+            meta,
+            self.analysis_metadata_collection,
+            self.densetc_analysis_collection,
+            self.bonus_analysis_collection)
+        self._finish_load()
+
+    def _on_analysis_cancelled(self, *_):
+        """
+        User backed out of the picker entirely. DB handles and config are
+        already set on self but no analysis was chosen, map_loaded stays
+        False, and display_map never runs, so the canvas stays blank.
+        """
+        pass
+
+    def _finish_load(self):
+        """
+        Everything after the analysis is chosen: fetch the data and
+        analysis dicts (keyed by site number, much faster than each
+        SitePlot querying individually), clear any previous map (TODO), render.
+        """
+        self.densetc_data = {
+            d["number"]: d
+            for d in self.densetc_data_collection.find({})
+        }
+        self.densetc_analysis = {
+            a["number"]: a
+            for a in self.densetc_analysis_collection.find(
+                {"analysis_id": self.analysis_id})
+        }
 
         try:
-            # TODO Allow loading new maps
+            # TODO clear_map is a no-op — see issue #12 (load new map
+            # without restart).
             self.clear_map()
         except Exception as e:
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("General error", 
-                                 "Error occurred while trying to display map. "
-                                 "Were the correct files selected?")
             logging.exception(e)
-            root.destroy()
+            InfoPopup("Error",
+                      "Error occurred while trying to display map. "
+                      "Were the correct files selected?").open()
 
         self.display_map()
         print("\n *** Ready! *** \n")
-        root.destroy()
+
+    def _build_ic_pseudo_sites(self):
+        """
+        IC recordings have a depth per site but no spatial map. Fabricate a
+        two-column pseudo-voronoi: odd-numbered sites in the left column,
+        even in the right, ordered top-to-bottom by depth so shallow
+        (low-frequency) IC sits at the top.
+
+        Cell heights come from inter-site depth spacing, which usually
+        alternates ~0, ~200, ~0, ~200 (two sites per depth). We take the
+        per-depth max to skip the zeros, then backfill the topmost site(s)
+        which have nothing before them to diff against.
+        """
+        ic_sites = [
+            {"number": int(s["number"]), "depth": int(s["depth"])}
+            for s in self.densetc_data_collection.find({})
+        ]
+        df = pd.DataFrame(ic_sites).sort_values("depth").reset_index(drop=True)
+
+        odd_x, even_x = 0.25, 0.75
+        df["x"] = df["number"].apply(lambda n: odd_x if n % 2 else even_x)
+        df["y"] = df["depth"]
+
+        df["inter_depth"] = df["y"].diff()
+        # Two sites per depth → diff alternates 0, ~200. Max-per-depth skips
+        # the zeros while tolerating the odd depth with only one site.
+        df["inter_depth"] = df["y"].apply(
+            lambda y: df.loc[df["y"] == y, "inter_depth"].max())
+        # Top site(s) have no prior depth to diff → 0 → NaN → backfill.
+        df.loc[df["inter_depth"] == 0, "inter_depth"] = np.nan
+        df["inter_depth"] = df["inter_depth"].bfill()
+
+        df["vert_up"] = df["y"] - df["inter_depth"] / 2
+        df["vert_down"] = df["y"] + df["inter_depth"] / 2
+
+        # Flip (depth increases downward on the probe but we want shallow at
+        # the top of the display) then normalize to [0, 1].
+        df[["y", "vert_up", "vert_down"]] *= -1
+        lo, hi = df["vert_down"].min(), df["vert_up"].max()
+        df[["y", "vert_up", "vert_down"]] = (
+            (df[["y", "vert_up", "vert_down"]] - lo) / (hi - lo))
+
+        sites = []
+        for s in df.to_dict("records"):
+            s["voronoi_centroid"] = [s["x"], s["y"]]
+            if s["x"] == odd_x:
+                s["voronoi_vertices"] = [
+                    (0,   s["vert_down"]), (0,   s["vert_up"]),
+                    (0.5, s["vert_up"]),   (0.5, s["vert_down"])]
+            else:
+                s["voronoi_vertices"] = [
+                    (0.5, s["vert_down"]), (0.5, s["vert_up"]),
+                    (1,   s["vert_up"]),   (1,   s["vert_down"])]
+            sites.append(s)
+        return sites
 
     def display_map(self):
         """Generate map visuals."""
@@ -2951,6 +2880,192 @@ class SitePlot(RelativeLayout):
 
         self.figure_canvas.draw()
 
+class InfoPopup(Popup):
+    """
+    One-button modal. Replaces messagebox.showinfo / showerror.
+
+    Non-blocking — open() returns immediately. If you need to do something
+    after the user acknowledges, bind to on_dismiss.
+    """
+    def __init__(self, title, message, **kwargs):
+        layout = BoxLayout(orientation="vertical", padding=12, spacing=12)
+        lbl = Label(text=message, halign="center", valign="middle")
+        lbl.bind(size=lbl.setter("text_size"))  # enable text wrapping
+        layout.add_widget(lbl)
+        ok = Button(text="OK", size_hint=(1, None), height=44)
+        ok.bind(on_release=self.dismiss)
+        layout.add_widget(ok)
+        super().__init__(title=title, content=layout,
+                         size_hint=(0.45, 0.3), auto_dismiss=True, **kwargs)
+
+class AnalysisPickerPopup(Popup):
+    """
+    Replaces afunc.load_analysis's tkinter window for the GUI path.
+
+    Dispatches:
+      on_pick(selection_series, create_new_bool) — Load or Create clicked
+      on_cancel() — dismissed without picking
+    """
+    __events__ = ("on_pick", "on_cancel")
+
+    def __init__(self, analyses_df, **kwargs):
+        self._df = analyses_df
+        self._picked = False  # distinguishes button-dismiss from cancel-dismiss
+
+        # "name: comments" -> row index, same display format as the Tk version
+        self._choices = {
+            f"{row['name']}: {row['comments']}": idx
+            for idx, row in analyses_df.iterrows()
+        }
+
+        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
+
+        prompt = Label(
+            text="Load an existing analysis, or select one as a template "
+                 "to create a new analysis from:",
+            size_hint=(1, 0.12), halign="center", valign="middle")
+        prompt.bind(size=prompt.setter("text_size"))
+        layout.add_widget(prompt)
+
+        self._meta = Label(
+            text="(select an analysis to see its details)",
+            size_hint=(1, 0.45), halign="left", valign="top")
+        self._meta.bind(size=self._meta.setter("text_size"))
+        layout.add_widget(self._meta)
+
+        self._spinner = Spinner(
+            text="— select —",
+            values=list(self._choices.keys()),
+            size_hint=(1, None), height=44)
+        self._spinner.bind(text=self._update_meta)
+        layout.add_widget(self._spinner)
+
+        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
+                          size_hint=(1, 0.1))
+        layout.add_widget(self._err)
+
+        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
+        load_b = Button(text="Load Selected")
+        new_b = Button(text="Create New From Selected")
+        cancel_b = Button(text="Cancel")
+        load_b.bind(on_release=self._load)
+        new_b.bind(on_release=self._create)
+        cancel_b.bind(on_release=self.dismiss)
+        btns.add_widget(load_b)
+        btns.add_widget(new_b)
+        btns.add_widget(cancel_b)
+        layout.add_widget(btns)
+
+        super().__init__(title="Select Analysis", content=layout,
+                         size_hint=(0.7, 0.65), auto_dismiss=False, **kwargs)
+        self.bind(on_dismiss=self._maybe_cancel)
+
+    def _update_meta(self, _spinner, text):
+        if text not in self._choices:
+            return
+        s = self._df.iloc[self._choices[text]]
+        self._meta.text = (
+            f"name: {s['name']}\n\n"
+            f"start_date: {s['start_date']}\n"
+            f"last_modified: {s['last_modified']}\n\n"
+            f"comments: {s['comments']}\n\n"
+            f"frozen: {s['frozen']}\n"
+            f"id: {s['_id']}")
+        self._err.text = ""
+
+    def _selection(self):
+        t = self._spinner.text
+        return self._df.iloc[self._choices[t]] if t in self._choices else None
+
+    def _load(self, *_):
+        sel = self._selection()
+        if sel is None:
+            self._err.text = "Pick an analysis first."
+            return
+        if sel["frozen"]:
+            self._err.text = ("This analysis is frozen and cannot be edited.")
+            return
+        self._picked = True
+        self.dismiss()
+        self.dispatch("on_pick", sel, False)
+
+    def _create(self, *_):
+        sel = self._selection()
+        if sel is None:
+            self._err.text = "Pick a template analysis first."
+            return
+        self._picked = True
+        self.dismiss()
+        self.dispatch("on_pick", sel, True)
+
+    def _maybe_cancel(self, *_):
+        if not self._picked:
+            self.dispatch("on_cancel")
+
+    # Kivy requires default handlers for declared custom events
+    def on_pick(self, selection, create_new): pass
+    def on_cancel(self): pass
+
+class NewAnalysisMetadataPopup(Popup):
+    """
+    Replaces afunc.new_analysis_metadata_document's simpledialog chain.
+
+    Dispatches:
+      on_submit(name, comments)
+      on_cancel()
+    """
+    __events__ = ("on_submit", "on_cancel")
+
+    def __init__(self, **kwargs):
+        self._submitted = False
+
+        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
+
+        layout.add_widget(Label(text="Who is doing the analysis?",
+                                size_hint=(1, None), height=28,
+                                halign="left"))
+        self._name = TextInput(multiline=False, size_hint=(1, None),
+                               height=38)
+        layout.add_widget(self._name)
+
+        layout.add_widget(Label(text="Brief comment about this analysis:",
+                                size_hint=(1, None), height=28,
+                                halign="left"))
+        self._comments = TextInput(multiline=True, size_hint=(1, 1))
+        layout.add_widget(self._comments)
+
+        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
+                          size_hint=(1, None), height=24)
+        layout.add_widget(self._err)
+
+        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
+        go = Button(text="Create")
+        cancel = Button(text="Cancel")
+        go.bind(on_release=self._go)
+        cancel.bind(on_release=self.dismiss)
+        btns.add_widget(go)
+        btns.add_widget(cancel)
+        layout.add_widget(btns)
+
+        super().__init__(title="New Analysis", content=layout,
+                         size_hint=(0.5, 0.55), auto_dismiss=False, **kwargs)
+        self.bind(on_dismiss=self._maybe_cancel)
+
+    def _go(self, *_):
+        name = self._name.text.strip()
+        if not name:
+            self._err.text = "Name is required."
+            return
+        self._submitted = True
+        self.dismiss()
+        self.dispatch("on_submit", name, self._comments.text.strip())
+
+    def _maybe_cancel(self, *_):
+        if not self._submitted:
+            self.dispatch("on_cancel")
+
+    def on_submit(self, name, comments): pass
+    def on_cancel(self): pass
 
 if __name__ == "__main__":
     FieldSelectionApp().run()
