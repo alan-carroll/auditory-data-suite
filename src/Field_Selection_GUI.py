@@ -17,6 +17,8 @@ from kivy.uix.stacklayout import StackLayout
 from kivy.uix.spinner import Spinner
 from kivy.uix.label import Label
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.popup import Popup
+from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
 from matplotlib.path import Path as MplPath
@@ -2951,6 +2953,192 @@ class SitePlot(RelativeLayout):
 
         self.figure_canvas.draw()
 
+class InfoPopup(Popup):
+    """
+    One-button modal. Replaces messagebox.showinfo / showerror.
+
+    Non-blocking — open() returns immediately. If you need to do something
+    after the user acknowledges, bind to on_dismiss.
+    """
+    def __init__(self, title, message, **kwargs):
+        layout = BoxLayout(orientation="vertical", padding=12, spacing=12)
+        lbl = Label(text=message, halign="center", valign="middle")
+        lbl.bind(size=lbl.setter("text_size"))  # enable text wrapping
+        layout.add_widget(lbl)
+        ok = Button(text="OK", size_hint=(1, None), height=44)
+        ok.bind(on_release=self.dismiss)
+        layout.add_widget(ok)
+        super().__init__(title=title, content=layout,
+                         size_hint=(0.45, 0.3), auto_dismiss=True, **kwargs)
+
+class AnalysisPickerPopup(Popup):
+    """
+    Replaces afunc.load_analysis's tkinter window for the GUI path.
+
+    Dispatches:
+      on_pick(selection_series, create_new_bool) — Load or Create clicked
+      on_cancel() — dismissed without picking
+    """
+    __events__ = ("on_pick", "on_cancel")
+
+    def __init__(self, analyses_df, **kwargs):
+        self._df = analyses_df
+        self._picked = False  # distinguishes button-dismiss from cancel-dismiss
+
+        # "name: comments" -> row index, same display format as the Tk version
+        self._choices = {
+            f"{row['name']}: {row['comments']}": idx
+            for idx, row in analyses_df.iterrows()
+        }
+
+        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
+
+        prompt = Label(
+            text="Load an existing analysis, or select one as a template "
+                 "to create a new analysis from:",
+            size_hint=(1, 0.12), halign="center", valign="middle")
+        prompt.bind(size=prompt.setter("text_size"))
+        layout.add_widget(prompt)
+
+        self._meta = Label(
+            text="(select an analysis to see its details)",
+            size_hint=(1, 0.45), halign="left", valign="top")
+        self._meta.bind(size=self._meta.setter("text_size"))
+        layout.add_widget(self._meta)
+
+        self._spinner = Spinner(
+            text="— select —",
+            values=list(self._choices.keys()),
+            size_hint=(1, None), height=44)
+        self._spinner.bind(text=self._update_meta)
+        layout.add_widget(self._spinner)
+
+        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
+                          size_hint=(1, 0.1))
+        layout.add_widget(self._err)
+
+        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
+        load_b = Button(text="Load Selected")
+        new_b = Button(text="Create New From Selected")
+        cancel_b = Button(text="Cancel")
+        load_b.bind(on_release=self._load)
+        new_b.bind(on_release=self._create)
+        cancel_b.bind(on_release=self.dismiss)
+        btns.add_widget(load_b)
+        btns.add_widget(new_b)
+        btns.add_widget(cancel_b)
+        layout.add_widget(btns)
+
+        super().__init__(title="Select Analysis", content=layout,
+                         size_hint=(0.7, 0.65), auto_dismiss=False, **kwargs)
+        self.bind(on_dismiss=self._maybe_cancel)
+
+    def _update_meta(self, _spinner, text):
+        if text not in self._choices:
+            return
+        s = self._df.iloc[self._choices[text]]
+        self._meta.text = (
+            f"name: {s['name']}\n\n"
+            f"start_date: {s['start_date']}\n"
+            f"last_modified: {s['last_modified']}\n\n"
+            f"comments: {s['comments']}\n\n"
+            f"frozen: {s['frozen']}\n"
+            f"id: {s['_id']}")
+        self._err.text = ""
+
+    def _selection(self):
+        t = self._spinner.text
+        return self._df.iloc[self._choices[t]] if t in self._choices else None
+
+    def _load(self, *_):
+        sel = self._selection()
+        if sel is None:
+            self._err.text = "Pick an analysis first."
+            return
+        if sel["frozen"]:
+            self._err.text = ("This analysis is frozen and cannot be edited.")
+            return
+        self._picked = True
+        self.dismiss()
+        self.dispatch("on_pick", sel, False)
+
+    def _create(self, *_):
+        sel = self._selection()
+        if sel is None:
+            self._err.text = "Pick a template analysis first."
+            return
+        self._picked = True
+        self.dismiss()
+        self.dispatch("on_pick", sel, True)
+
+    def _maybe_cancel(self, *_):
+        if not self._picked:
+            self.dispatch("on_cancel")
+
+    # Kivy requires default handlers for declared custom events
+    def on_pick(self, selection, create_new): pass
+    def on_cancel(self): pass
+
+class NewAnalysisMetadataPopup(Popup):
+    """
+    Replaces afunc.new_analysis_metadata_document's simpledialog chain.
+
+    Dispatches:
+      on_submit(name, comments)
+      on_cancel()
+    """
+    __events__ = ("on_submit", "on_cancel")
+
+    def __init__(self, **kwargs):
+        self._submitted = False
+
+        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
+
+        layout.add_widget(Label(text="Who is doing the analysis?",
+                                size_hint=(1, None), height=28,
+                                halign="left"))
+        self._name = TextInput(multiline=False, size_hint=(1, None),
+                               height=38)
+        layout.add_widget(self._name)
+
+        layout.add_widget(Label(text="Brief comment about this analysis:",
+                                size_hint=(1, None), height=28,
+                                halign="left"))
+        self._comments = TextInput(multiline=True, size_hint=(1, 1))
+        layout.add_widget(self._comments)
+
+        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
+                          size_hint=(1, None), height=24)
+        layout.add_widget(self._err)
+
+        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
+        go = Button(text="Create")
+        cancel = Button(text="Cancel")
+        go.bind(on_release=self._go)
+        cancel.bind(on_release=self.dismiss)
+        btns.add_widget(go)
+        btns.add_widget(cancel)
+        layout.add_widget(btns)
+
+        super().__init__(title="New Analysis", content=layout,
+                         size_hint=(0.5, 0.55), auto_dismiss=False, **kwargs)
+        self.bind(on_dismiss=self._maybe_cancel)
+
+    def _go(self, *_):
+        name = self._name.text.strip()
+        if not name:
+            self._err.text = "Name is required."
+            return
+        self._submitted = True
+        self.dismiss()
+        self.dispatch("on_submit", name, self._comments.text.strip())
+
+    def _maybe_cancel(self, *_):
+        if not self._submitted:
+            self.dispatch("on_cancel")
+
+    def on_submit(self, name, comments): pass
+    def on_cancel(self): pass
 
 if __name__ == "__main__":
     FieldSelectionApp().run()
