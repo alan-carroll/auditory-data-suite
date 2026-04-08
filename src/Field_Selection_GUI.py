@@ -1,8 +1,15 @@
+# Disable Kivy's argument parser so the --db / --analysis-id / --ic
+# flags reach argparse in __main__ instead of being consumed (and
+# rejected) by Kivy at import time.
+import os
+os.environ["KIVY_NO_ARGS"] = "1"
+
 import datetime
 import itertools
-import os
 import numpy as np
 import matplotlib
+# Pin non-interactive backend prior to importing kivy
+matplotlib.use("Agg")
 from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
@@ -18,7 +25,6 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.label import Label
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.popup import Popup
-from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
 from matplotlib.path import Path as MplPath
@@ -56,14 +62,15 @@ Window.clearcolor = (1, 1, 1, 1)
 
 
 class FieldSelectionApp(App):
-    def __init__(self):
+    def __init__(self, db_path, analysis_id, is_ic):
         """
         Uses `ScreenManager` to allow swapping between main Map GUI and
         Site-specific GUIs.
         """
         super(FieldSelectionApp, self).__init__()
         self.SM = ScreenManager()
-        self.map_screen = MapScreen(name="Map")
+        self.map_screen = MapScreen(db_path, analysis_id, is_ic,
+                                    name="Map")
         self.SM.add_widget(self.map_screen)
         self.SM.current = "Map"
 
@@ -72,10 +79,10 @@ class FieldSelectionApp(App):
 
 
 class MapScreen(Screen):
-    def __init__(self, **kwargs):
+    def __init__(self, db_path, analysis_id, is_ic, **kwargs):
         """Container for main application."""
         super(MapScreen, self).__init__(**kwargs)
-        self.add_widget(FieldSelectionGUI())
+        self.add_widget(FieldSelectionGUI(db_path, analysis_id, is_ic))
 
 
 class SiteScreen(Screen):
@@ -551,11 +558,17 @@ class SiteScreen(Screen):
 
 
 class FieldSelectionGUI(BoxLayout):
-    def __init__(self):
+    def __init__(self, db_path, analysis_id, is_ic):
         """
         Main application showing all Sites for a Map.
         Permits Auditory Field selection and overview of map properties and 
         analysis.
+
+        DB file, analysis, and cortical/IC choice are selected in the
+        CLI (map_analysis._pick_map_and_analysis) before this process
+        launches, and arrive here via argv. The GUI has no file or
+        analysis picker of its own; switching maps means closing the
+        window and picking again from the CLI.
         """
         super(FieldSelectionGUI, self).__init__(orientation="horizontal")
         # Connect to signal for tracking transition from Site to Map Screens.
@@ -570,14 +583,15 @@ class FieldSelectionGUI(BoxLayout):
         self.flash_mesh = None
         self.flash_clock_event = None
 
-        self.ic_bool = False  # Changes coloring of histograms based on latency
+        self._db_path = db_path
+        self.analysis_id = analysis_id
+        self.ic_bool = is_ic    # Changes coloring of histograms based on latency
         self.map_loaded = False
         self.subject_database = None
         self.map_metadata_collection = None
         self.map_metadata = None
         self.sites_collection = None
         self.densetc_analysis_collection = None
-        self.bonus_analysis_collection = None
         self.densetc_data_collection = None
         self.analysis_metadata_collection = None
         self.project_configuration = None
@@ -589,9 +603,6 @@ class FieldSelectionGUI(BoxLayout):
         self.sites = None
         self.densetc_data = None
         self.densetc_analysis = None
-        self.analysis_id = ""
-
-        self._pending_template_id = None  # stash between picker and metadata popups
 
         self.mongo_connection = None
         self.counter = 0
@@ -642,7 +653,6 @@ class FieldSelectionGUI(BoxLayout):
                              zip(self.fields, colors)}
         self.field_line_colors = {field: color for field, color in 
                                   zip(self.fields, line_colors)}
-        self.map_file_path = ""
         self.vor_file = ""
 
         # Arrange GUI
@@ -680,10 +690,6 @@ class FieldSelectionGUI(BoxLayout):
                                                group="paint", 
                                                size_hint=(1, 0.05), 
                                                halign="center")
-        self.open_file_button = Button(text="Load Map", size_hint=(1, 0.06))
-        self.open_file_button.bind(on_release=self.load_map)
-        self.open_ic_button = Button(text="Load IC", size_hint=(1, 0.06))
-        self.open_ic_button.bind(on_release=self.load_ic)
         self.export_map_num_button = Button(text="Save Fields /\n Marks", 
                                             size_hint=(1, 0.06), 
                                             halign="center")
@@ -710,8 +716,6 @@ class FieldSelectionGUI(BoxLayout):
                                      size_hint=(1, 0.06))
         self.field_spinner.bind(text=self.check_mark_or_field)
 
-        tools.add_widget(self.open_file_button)
-        tools.add_widget(self.open_ic_button)
         tools.add_widget(self.cf_spinner_label)
         tools.add_widget(self.cf_colormap_dropdown)
         tools.add_widget(self.toggle)
@@ -802,6 +806,98 @@ class FieldSelectionGUI(BoxLayout):
         self.add_widget(tools)
         self.add_widget(self.scroll)
         self.add_widget(self.plot_tools_layout)
+        # Defer until the window / GL context exist -- display_map()
+        # builds hundreds of matplotlib figures and draws on the Kivy
+        # canvas, which needs the event loop running.
+        Clock.schedule_once(self._load)
+
+    def _load(self, _dt):
+        """
+        Connect to the DB, read project config, fetch sites + data +
+        analysis, and render. Runs once on the first frame via
+        Clock.schedule_once so the Kivy window and GL context exist
+        before display_map() starts building per-site figures and
+        drawing voronoi meshes on the canvas.
+
+        All user choices (DB file, cortical-vs-IC, which analysis)
+        were made in the CLI before this process launched; see
+        map_analysis._pick_map_and_analysis().
+        """
+        try:
+            is_ic = self.ic_bool
+
+            # --- DB connection & collection handles ------------------
+            self.mongo_connection = TinyMongoClient(
+                os.path.dirname(self._db_path))
+            self.subject_database = getattr(
+                self.mongo_connection,
+                os.path.splitext(os.path.basename(self._db_path))[0])
+            self.map_metadata_collection = self.subject_database.metadata
+            self.map_metadata = self.map_metadata_collection.find_one({})
+            self.analysis_metadata_collection = \
+                self.subject_database.analysis_metadata
+
+            if is_ic:
+                # IC has no stored map dimensions or voronoi polygons,
+                # so we make them up. 3000x1000 is just "tall and
+                # narrow" to suit a depth column; doesn't persist back
+                # to the database.
+                self.map_metadata["map_height"] = 3000
+                self.map_metadata["map_width"] = 1000
+                self.densetc_data_collection = \
+                    self.subject_database.densetc_IC_data
+                self.densetc_analysis_collection = \
+                    self.subject_database.densetc_IC_analysis
+            else:
+                self.sites_collection = self.subject_database.sites
+                self.densetc_data_collection = \
+                    self.subject_database.densetc_data
+                self.densetc_analysis_collection = \
+                    self.subject_database.densetc_analysis
+
+            # --- Project configuration -------------------------------
+            # Expect exactly one analysis metadata doc to carry a
+            # configuration (the auto-analysis run). $exists is what we
+            # want but tinymongo doesn't implement it; $ne against a
+            # value the field never holds is a cheap substitute -- any
+            # doc with the field matches, any doc without is skipped.
+            self.project_configuration = \
+                self.analysis_metadata_collection.find_one(
+                    {"configuration": {"$ne": False}})["configuration"]
+            self.frequency = np.sort(
+                self.project_configuration["densetc_frequency_hz"])
+            self.intensity = np.sort(
+                self.project_configuration["densetc_intensity_db"])
+            self.num_frequency = len(self.frequency)
+            self.num_intensity = len(self.intensity)
+            self.num_tones = \
+                self.project_configuration["densetc_num_tones"]
+
+            # --- Sites, data, analysis -------------------------------
+            if is_ic:
+                self.sites = self._build_ic_pseudo_sites()
+            else:
+                self.sites = list(self.sites_collection.find({}))
+
+            # Keyed by site number so each SitePlot can look its own
+            # data up without re-querying tinymongo per site.
+            self.densetc_data = {
+                d["number"]: d
+                for d in self.densetc_data_collection.find({})}
+            self.densetc_analysis = {
+                a["number"]: a
+                for a in self.densetc_analysis_collection.find(
+                    {"analysis_id": self.analysis_id})}
+
+            self.display_map()
+            print("\n *** Ready! *** \n")
+
+        except Exception as e:
+            logging.exception(e)
+            InfoPopup(
+                "Error",
+                f"Failed to load map:\n{e}\n\n"
+                "Close the GUI and retry from the CLI.").open()
 
     @property
     def paint_mode_active(self):
@@ -1102,162 +1198,6 @@ class FieldSelectionGUI(BoxLayout):
         for fig in self.plot_dict.values():
             fig.size = (fig.width * 0.75, fig.height * 0.75)
 
-    def load_map(self, _event):
-        """Load a cortical auditory map."""
-        self._begin_load(is_ic=False)
-
-    def load_ic(self, _event):
-        """Load an inferior-colliculus auditory pseudo-map."""
-        self._begin_load(is_ic=True)
-
-    def _begin_load(self, is_ic):
-        """
-        Synchronous half of loading: pick the file, connect to the database,
-        read project config, fetch site list.
-
-        `is_ic` picks between the cortical and inferior-colliculus code paths: 
-        different collection names, and IC fabricates pseudo-voronoi cells from
-        penetration depth instead of reading stored polygons.
-
-        Hands off to _prompt_analysis() for the part that needs user choices.
-        """
-        path = afunc.get_file(title="Select database JSON file",
-                              filetypes=[("JSON", ".json")])
-        if not path:
-            return
-        self.map_file_path = path
-
-        # --- DB connection & collection handles -------------------------
-        self.mongo_connection = TinyMongoClient(
-            os.path.dirname(self.map_file_path))
-        self.subject_database = getattr(
-            self.mongo_connection,
-            os.path.splitext(os.path.basename(self.map_file_path))[0])
-        self.map_metadata_collection = self.subject_database.metadata
-        self.map_metadata = self.map_metadata_collection.find_one({})
-        self.analysis_metadata_collection = \
-            self.subject_database.analysis_metadata
-
-        if is_ic:
-            # IC has no stored map dimensions or voronoi polygons, so we make
-            # them up. 3000×1000 is just "tall and narrow" to suit a depth
-            # column. These overrides don't persist back to the database.
-            self.map_metadata["map_height"] = 3000
-            self.map_metadata["map_width"] = 1000
-            self.densetc_data_collection = \
-                self.subject_database.densetc_IC_data
-            self.densetc_analysis_collection = \
-                self.subject_database.densetc_IC_analysis
-            # Mirror of the cortical branch: bonus = cortical, so creating
-            # a new analysis from an IC load clones the cortical side too.
-            self.bonus_analysis_collection = \
-                self.subject_database.densetc_analysis
-        else:
-            self.sites_collection = self.subject_database.sites
-            self.densetc_data_collection = self.subject_database.densetc_data
-            self.densetc_analysis_collection = \
-                self.subject_database.densetc_analysis
-            # Cortical loads IC as the "bonus" collection so that creating a new
-            # analysis clones both. An empty bonus collection is harmless if the 
-            # project has no IC data.
-            self.bonus_analysis_collection = \
-                self.subject_database.densetc_IC_analysis
-
-        # --- Project configuration --------------------------------------
-        # Expect exactly one analysis metadata doc to carry a configuration
-        # (the auto-analysis run). $exists is what we want but tinymongo
-        # doesn't implement it; $ne against a value the field never holds is
-        # a cheap substitute; any doc with the field matches, any doc
-        # without it is skipped.
-        self.project_configuration = \
-            self.analysis_metadata_collection.find_one(
-                {"configuration": {"$ne": False}})["configuration"]
-        self.frequency = np.sort(
-            self.project_configuration["densetc_frequency_hz"])
-        self.intensity = np.sort(
-            self.project_configuration["densetc_intensity_db"])
-        self.num_frequency = len(self.frequency)
-        self.num_intensity = len(self.intensity)
-        self.num_tones = self.project_configuration["densetc_num_tones"]
-
-        # --- Site list ----------------------------------------------------
-        if is_ic:
-            self.sites = self._build_ic_pseudo_sites()
-        else:
-            self.sites = list(self.sites_collection.find({}))
-
-        self._prompt_analysis()
-
-    def _prompt_analysis(self):
-        """
-        Open the analysis picker.
-        """
-        analyses = pd.DataFrame(
-            list(self.analysis_metadata_collection.find({})))
-        popup = AnalysisPickerPopup(analyses)
-        popup.bind(on_pick=self._on_analysis_picked)
-        popup.bind(on_cancel=self._on_analysis_cancelled)
-        popup.open()
-
-    def _on_analysis_picked(self, _popup, selection, create_new):
-        if not create_new:
-            self.analysis_id = selection["_id"]
-            self._finish_load()
-            return
-        # Stash the template id, then collect name/comments.
-        self._pending_template_id = selection["_id"]
-        meta_popup = NewAnalysisMetadataPopup()
-        meta_popup.bind(on_submit=self._on_new_metadata)
-        meta_popup.bind(on_cancel=lambda *_: self._prompt_analysis())
-        meta_popup.open()
-
-    def _on_new_metadata(self, _popup, name, comments):
-        meta = afunc.build_analysis_metadata(name, comments)
-        self.analysis_id = afunc.create_new_densetc_analysis(
-            self._pending_template_id,
-            meta,
-            self.analysis_metadata_collection,
-            self.densetc_analysis_collection,
-            self.bonus_analysis_collection)
-        self._finish_load()
-
-    def _on_analysis_cancelled(self, *_):
-        """
-        User backed out of the picker entirely. DB handles and config are
-        already set on self but no analysis was chosen, map_loaded stays
-        False, and display_map never runs, so the canvas stays blank.
-        """
-        pass
-
-    def _finish_load(self):
-        """
-        Everything after the analysis is chosen: fetch the data and
-        analysis dicts (keyed by site number, much faster than each
-        SitePlot querying individually), clear any previous map (TODO), render.
-        """
-        self.densetc_data = {
-            d["number"]: d
-            for d in self.densetc_data_collection.find({})
-        }
-        self.densetc_analysis = {
-            a["number"]: a
-            for a in self.densetc_analysis_collection.find(
-                {"analysis_id": self.analysis_id})
-        }
-
-        try:
-            # TODO clear_map is a no-op — see issue #12 (load new map
-            # without restart).
-            self.clear_map()
-        except Exception as e:
-            logging.exception(e)
-            InfoPopup("Error",
-                      "Error occurred while trying to display map. "
-                      "Were the correct files selected?").open()
-
-        self.display_map()
-        print("\n *** Ready! *** \n")
-
     def _build_ic_pseudo_sites(self):
         """
         IC recordings have a depth per site but no spatial map. Fabricate a
@@ -1537,9 +1477,6 @@ class FieldSelectionGUI(BoxLayout):
                 (x, y, 0, 0) for x, y in 
                 zip(poly_x_adjusted, poly_y_adjusted)]))
             mesh_tuple.mesh.vertices = mesh_adjusted_points
-
-    def clear_map(self):
-        pass  # TODO allow loading new maps without having to restart GUI / CLI
 
 
 class MapLayout(FloatLayout):
@@ -2605,175 +2542,21 @@ class InfoPopup(Popup):
         super().__init__(title=title, content=layout,
                          size_hint=(0.45, 0.3), auto_dismiss=True, **kwargs)
 
-class AnalysisPickerPopup(Popup):
-    """
-    Replaces afunc.load_analysis's tkinter window for the GUI path.
-
-    Dispatches:
-      on_pick(selection_series, create_new_bool) — Load or Create clicked
-      on_cancel() — dismissed without picking
-    """
-    __events__ = ("on_pick", "on_cancel")
-
-    def __init__(self, analyses_df, **kwargs):
-        self._df = analyses_df
-        self._picked = False  # distinguishes button-dismiss from cancel-dismiss
-
-        # "name: comments" -> row index, same display format as the Tk version
-        self._choices = {
-            f"{row['name']}: {row['comments']}": idx
-            for idx, row in analyses_df.iterrows()
-        }
-
-        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
-
-        prompt = Label(
-            text="Load an existing analysis, or select one as a template "
-                 "to create a new analysis from:",
-            size_hint=(1, 0.12), halign="center", valign="middle")
-        prompt.bind(size=prompt.setter("text_size"))
-        layout.add_widget(prompt)
-
-        self._meta = Label(
-            text="(select an analysis to see its details)",
-            size_hint=(1, 0.45), halign="left", valign="top")
-        self._meta.bind(size=self._meta.setter("text_size"))
-        layout.add_widget(self._meta)
-
-        self._spinner = Spinner(
-            text="— select —",
-            values=list(self._choices.keys()),
-            size_hint=(1, None), height=44)
-        self._spinner.bind(text=self._update_meta)
-        layout.add_widget(self._spinner)
-
-        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
-                          size_hint=(1, 0.1))
-        layout.add_widget(self._err)
-
-        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
-        load_b = Button(text="Load Selected")
-        new_b = Button(text="Create New From Selected")
-        cancel_b = Button(text="Cancel")
-        load_b.bind(on_release=self._load)
-        new_b.bind(on_release=self._create)
-        cancel_b.bind(on_release=self.dismiss)
-        btns.add_widget(load_b)
-        btns.add_widget(new_b)
-        btns.add_widget(cancel_b)
-        layout.add_widget(btns)
-
-        super().__init__(title="Select Analysis", content=layout,
-                         size_hint=(0.7, 0.65), auto_dismiss=False, **kwargs)
-        self.bind(on_dismiss=self._maybe_cancel)
-
-    def _update_meta(self, _spinner, text):
-        if text not in self._choices:
-            return
-        s = self._df.iloc[self._choices[text]]
-        self._meta.text = (
-            f"name: {s['name']}\n\n"
-            f"start_date: {s['start_date']}\n"
-            f"last_modified: {s['last_modified']}\n\n"
-            f"comments: {s['comments']}\n\n"
-            f"frozen: {s['frozen']}\n"
-            f"id: {s['_id']}")
-        self._err.text = ""
-
-    def _selection(self):
-        t = self._spinner.text
-        return self._df.iloc[self._choices[t]] if t in self._choices else None
-
-    def _load(self, *_):
-        sel = self._selection()
-        if sel is None:
-            self._err.text = "Pick an analysis first."
-            return
-        if sel["frozen"]:
-            self._err.text = ("This analysis is frozen and cannot be edited.")
-            return
-        self._picked = True
-        self.dismiss()
-        self.dispatch("on_pick", sel, False)
-
-    def _create(self, *_):
-        sel = self._selection()
-        if sel is None:
-            self._err.text = "Pick a template analysis first."
-            return
-        self._picked = True
-        self.dismiss()
-        self.dispatch("on_pick", sel, True)
-
-    def _maybe_cancel(self, *_):
-        if not self._picked:
-            self.dispatch("on_cancel")
-
-    # Kivy requires default handlers for declared custom events
-    def on_pick(self, selection, create_new): pass
-    def on_cancel(self): pass
-
-class NewAnalysisMetadataPopup(Popup):
-    """
-    Replaces afunc.new_analysis_metadata_document's simpledialog chain.
-
-    Dispatches:
-      on_submit(name, comments)
-      on_cancel()
-    """
-    __events__ = ("on_submit", "on_cancel")
-
-    def __init__(self, **kwargs):
-        self._submitted = False
-
-        layout = BoxLayout(orientation="vertical", padding=15, spacing=8)
-
-        layout.add_widget(Label(text="Who is doing the analysis?",
-                                size_hint=(1, None), height=28,
-                                halign="left"))
-        self._name = TextInput(multiline=False, size_hint=(1, None),
-                               height=38)
-        layout.add_widget(self._name)
-
-        layout.add_widget(Label(text="Brief comment about this analysis:",
-                                size_hint=(1, None), height=28,
-                                halign="left"))
-        self._comments = TextInput(multiline=True, size_hint=(1, 1))
-        layout.add_widget(self._comments)
-
-        self._err = Label(text="", color=[0.9, 0.25, 0.25, 1],
-                          size_hint=(1, None), height=24)
-        layout.add_widget(self._err)
-
-        btns = BoxLayout(size_hint=(1, None), height=44, spacing=8)
-        go = Button(text="Create")
-        cancel = Button(text="Cancel")
-        go.bind(on_release=self._go)
-        cancel.bind(on_release=self.dismiss)
-        btns.add_widget(go)
-        btns.add_widget(cancel)
-        layout.add_widget(btns)
-
-        super().__init__(title="New Analysis", content=layout,
-                         size_hint=(0.5, 0.55), auto_dismiss=False, **kwargs)
-        self.bind(on_dismiss=self._maybe_cancel)
-
-    def _go(self, *_):
-        name = self._name.text.strip()
-        if not name:
-            self._err.text = "Name is required."
-            return
-        self._submitted = True
-        self.dismiss()
-        self.dispatch("on_submit", name, self._comments.text.strip())
-
-    def _maybe_cancel(self, *_):
-        if not self._submitted:
-            self.dispatch("on_cancel")
-
-    def on_submit(self, name, comments): pass
-    def on_cancel(self): pass
 
 if __name__ == "__main__":
-    FieldSelectionApp().run()
-    App.stop()
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Field Selection GUI. Normally launched from the "
+                    "map_analysis CLI, which handles DB and analysis "
+                    "selection through native dialogs and passes the "
+                    "result here. To switch maps, close this window "
+                    "and pick again from the CLI.")
+    parser.add_argument("--db", required=True,
+                        help="path to the subject's TinyDB JSON file")
+    parser.add_argument("--analysis-id", required=True,
+                        help="_id of the analysis_metadata doc to load")
+    parser.add_argument("--ic", action="store_true",
+                        help="treat as an inferior-colliculus pseudo-map "
+                             "rather than a cortical map")
+    args = parser.parse_args()
+    FieldSelectionApp(args.db, args.analysis_id, args.ic).run()
