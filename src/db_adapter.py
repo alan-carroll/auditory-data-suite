@@ -30,6 +30,12 @@ from dataclasses import dataclass
 class InsertOneResult:
     inserted_id: str
 
+
+@dataclass(frozen=True)
+class InsertManyResult:
+    inserted_ids: list[str]
+
+
 class JSONStore:
     def __init__(self, path):
         # Unlike TinyMongoClient, which took a directory and derived the
@@ -71,6 +77,24 @@ class Collection:
         doc.setdefault("_id", str(uuid4())) # preserve tinymongo behavior
         self._table.insert(doc)
         return InsertOneResult(doc["_id"])
+    
+    def insert_many(self, documents):
+        docs = list(documents)
+        if not all(isinstance(doc, dict) for doc in docs):
+            raise TypeError("insert_many() requires an iterable of dict documents")
+
+        inserted_ids = []
+        to_insert = []
+        for document in docs:
+            doc = deepcopy(document)
+            doc.setdefault("_id", str(uuid4())) # preserve tinymongo behavior
+            inserted_ids.append(doc["_id"])
+            to_insert.append(doc)
+
+        if to_insert:
+            self._table.insert_multiple(to_insert)
+
+        return InsertManyResult(inserted_ids)
 
     def update_one(self, filter_, update):
         if set(update) != {"$set"}:
