@@ -8,12 +8,12 @@ import tkinter
 import subprocess
 import analysis_functions as afunc
 import densetc_analysis
-from tinymongo_fix.tinymongo_fix import TinyMongoClient
 import colorama
 from colorama import Fore, Style, Back
 import logging
 import json
 import pandas as pd
+from db_adapter import JSONStore
 
 
 colorama.init()
@@ -39,9 +39,7 @@ def _pick_map_and_analysis():
     if not db_path:
         return None
 
-    conn = TinyMongoClient(os.path.dirname(db_path))
-    db = getattr(conn,
-                 os.path.splitext(os.path.basename(db_path))[0])
+    db = JSONStore(db_path)
     meta_coll = db.analysis_metadata
 
     selection, create_new = afunc.load_analysis(meta_coll)
