@@ -16,7 +16,7 @@ class OCRResult:
     meta: dict = field(default_factory=dict)
 
 
-class DigitRecognizer:
+class DigitOCR:
     """
     Digit recognition via exact-match vectorized template matching.
     Optimized strictly for pure digital text on solid backgrounds.
