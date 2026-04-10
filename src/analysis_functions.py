@@ -21,13 +21,13 @@ import uuid
 import colorama
 import datetime
 import os
-from tinymongo_fix.tinymongo_fix import TinyMongoClient
 from shapely.geometry import Point
 import voronoi_picker
 from scipy.spatial import Voronoi
 from scipy.stats import ttest_ind
 import colorama
 from colorama import Fore, Style
+from db_adapter import JSONStore
 
 
 def get_folder(**kwargs):
@@ -481,7 +481,7 @@ def load_analysis(analysis_metadata_collection):
     """
     Load menu allowing user to choose existing analysis or create a new one.
     
-    Takes a tinymongo collection as input.
+    Takes a tinydb "mongo" collection as input.
     Frozen analyses cannot be loaded from this function.
     
     Returns a pandas Series of analysis metadata (or None if user exits menu),
@@ -579,7 +579,7 @@ def create_new_densetc_analysis(template_id, new_metadata,
     Adds metadata and duplicates entries from an existing analysis.
     
     Expects a dictionary of new analysis metadata and the analysis metadata and
-      densetc_analysis tinymongo collections to update. Duplicates existing 
+      densetc_analysis tinydb "mongo" collections to update. Duplicates existing 
       analysis and replaces id with new analysis id.
       
     Returns new analysis_metadata _id.
@@ -1376,10 +1376,9 @@ def create_final_file(ic_bool=False):
     # style, but arbitrary
     array_length = 88
 
-    # Initialize tinymongo database
-    mongo_connection = TinyMongoClient(os.path.dirname(db_path))
-    subject_database = getattr(mongo_connection, 
-                               os.path.splitext(os.path.basename(db_path))[0])
+    # Initialize database
+    subject_database = JSONStore(db_path)
+
     if ic_bool:
         densetc_analysis_collection = subject_database.densetc_IC_analysis
     else:
