@@ -172,7 +172,8 @@ if __name__ == "__main__":
                       Style.RESET_ALL)
                 continue
             while (yes_or_no := input("Do you want an SDF calculated for each "
-                                      "tuning curve PSTH [y/n]? (slower) > ")):
+                                      "tuning curve PSTH [y/n]? (slower) > ")
+                .strip().lower()) not in ("y", "n"):
                 continue
             return_sdf = True if yes_or_no == "y" else False
             file = afunc.get_file(title="Select final file", 

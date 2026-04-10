@@ -2092,7 +2092,8 @@ class SitePlot(RelativeLayout):
             # Thrown if s contains no values (non-responsive site)
             scaled_s = s
 
-        self.bubble.update({"offsets": list(zip(x, y)), "sizes": scaled_s ** 2})
+        offsets = np.column_stack((x, y))
+        self.bubble.update({"offsets": offsets, "sizes": scaled_s ** 2})
 
     def update_bubble_size(self):
         """
@@ -2206,7 +2207,7 @@ class SitePlot(RelativeLayout):
             # Thrown if s contains no values (non-responsive site)
             scaled_s = s
         self.bubble = ax.scatter(x=x, y=y, s=scaled_s ** 2, edgecolors="black",
-                                 lw=0.5, c=color)
+                                 lw=0.5, color=color)
         ax.set_facecolor(axis_color)
 
         self._draw_tc_overlays(ax)
