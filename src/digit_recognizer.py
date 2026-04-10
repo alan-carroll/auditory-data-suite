@@ -7,7 +7,7 @@ import warnings
 _NORM_SIZE = (48, 32)
 
 @dataclass
-class RecognitionResult:
+class OCRResult:
     """Single number recognition outcome."""
     crop: np.ndarray
     number: int | None = None
@@ -204,7 +204,7 @@ class DigitRecognizer:
     # ────────────────────────────────────────────────────────────
 
     def recognize(self, gray_image, meta={}):
-        res = RecognitionResult(crop=gray_image, meta=meta)
+        res = OCRResult(crop=gray_image, meta=meta)
         blobs = self._extract_blobs(gray_image)
         if not blobs:
             return res
@@ -239,7 +239,7 @@ class DigitRecognizer:
         Visual proof sheet.
 
         Args:
-            results: RecognitionResult's returned from recognize_batch
+            results: OCRResult's returned from recognize_batch
             cols: grid columns (default 10 for easy row tracking)
             save_proof_sheet: if given, saves proof sheet PNG instead of display
         """
