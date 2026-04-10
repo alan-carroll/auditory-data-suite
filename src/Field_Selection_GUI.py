@@ -14,7 +14,9 @@ from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
 import matplotlib.pyplot as plt
-from kivy.garden.matplotlib.backend_kivyagg import FigureCanvas
+# Pip-installable replacement for the legacy `garden install matplotlib` flower.
+# Aliased so the rest of the module doesn't need to change.
+from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg as FigureCanvas
 from kivy.uix.scrollview import ScrollView
 from kivy.core.window import Window
 from kivy.uix.button import Button
@@ -1674,7 +1676,7 @@ class SitePlot(RelativeLayout):
         self.site_analysis = self.gui_instance.densetc_analysis[self.site_number]
 
         # Allow user to change cmaps used for plots
-        self.cf_cmap = matplotlib.cm.get_cmap(kwargs["cf_cmap"])
+        self.cf_cmap = matplotlib.colormaps[kwargs["cf_cmap"]]
         self.heatmap_cmap = kwargs["heatmap_cmap"]
         # TODO test 48khz
         self.norm = matplotlib.colors.Normalize(
@@ -1887,7 +1889,7 @@ class SitePlot(RelativeLayout):
     def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
         """Update bubble plot or heatmap colors."""
         self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = matplotlib.cm.get_cmap(cf_cmap)
+        self.cf_cmap = matplotlib.colormaps[cf_cmap]
         if self.cf_idx is not None:
             # TODO allow user to change No CF color (default is red)
             self.bubble_color = self.cf_cmap(self.norm(self.cf_idx))
@@ -1936,8 +1938,8 @@ class SitePlot(RelativeLayout):
 
         # TODO generalize sweep length
         if self.onset_press and (0 <= xdata <= 400):
-            if np.any(xdata < self.offset_line.get_xdata()):
-                self.onset_line.set_xdata(xdata)
+            if xdata < self.offset_line.get_xdata()[0]:
+                self.onset_line.set_xdata([xdata, xdata])
                 self.onset = int(round(xdata))
                 if self.detailed_plot:
                     self.on_changes_signal.send()
@@ -1963,8 +1965,8 @@ class SitePlot(RelativeLayout):
 
         # TODO generalize sweep length
         elif self.offset_press and (0 <= xdata <= 400):
-            if np.any(xdata > self.onset_line.get_xdata()):
-                self.offset_line.set_xdata(xdata)
+            if xdata > self.onset_line.get_xdata()[0]:
+                self.offset_line.set_xdata([xdata, xdata])
                 self.offset = int(round(xdata))
                 if self.detailed_plot:
                     self.on_changes_signal.send()
@@ -2443,8 +2445,8 @@ class SitePlot(RelativeLayout):
             self.cf_marker = self.ax[1].plot(self.cf_idx, self.thresh_idx, 
                                              "r*", ms=8, alpha=0.5)[0]
         else:
-            self.cf_marker.set_xdata(self.cf_idx)
-            self.cf_marker.set_ydata(self.thresh_idx)
+            self.cf_marker.set_xdata([self.cf_idx])
+            self.cf_marker.set_ydata([self.thresh_idx])
         freq_range = self.gui_instance.num_frequency
         int_range = self.gui_instance.num_intensity
         # Any BW whose row now sits above the intensity grid is cleared;
