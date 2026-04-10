@@ -12,8 +12,7 @@ class OCRResult:
     crop: np.ndarray
     number: int | None = None
     confidence: float = 0.0
-    # Store metadata with result as needed (x/y coords, bbox, filename, etc.)
-    meta: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 class DigitOCR:
@@ -143,8 +142,8 @@ class DigitOCR:
         with path.open("w") as f:
             f.write("number,x,y\n")
             for r in results:
-                x = r.meta.get("x", "")
-                y = r.meta.get("y", "")
+                x = r.metadata.get("x", "")
+                y = r.metadata.get("y", "")
                 f.write(f"{r.number},{x},{y}\n")
         print(f"Exported {len(results)} rows to {path}")
 
@@ -203,8 +202,8 @@ class DigitOCR:
     #  Recognition
     # ────────────────────────────────────────────────────────────
 
-    def recognize(self, gray_image, meta={}):
-        res = OCRResult(crop=gray_image, meta=meta)
+    def recognize(self, gray_image, metadata={}):
+        res = OCRResult(crop=gray_image, metadata=metadata)
         blobs = self._extract_blobs(gray_image)
         if not blobs:
             return res
