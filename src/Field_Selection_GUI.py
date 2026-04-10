@@ -1502,180 +1502,96 @@ class MapScroll(ScrollView):
 
 class SitePlot(RelativeLayout):
     """
-    Render PSTH and TC matplotlib plots inside Kivy.
-    Uses a flag to determine if obj is a MapScreen or SiteScreen (re: detailed)
-    plot item.
+    PSTH + TC rendering for one site.
+
+    Map instances share one SiteModel.
+    All analysis state and derived
+    arrays live on the model; this class is rendering and mouse
+    handling only.
     """
-    def __init__(self, **kwargs):
-        super(SitePlot, self).__init__(size_hint=kwargs["size_hint"],
-                                       pos_hint=kwargs["pos_hint"],
-                                       height=kwargs["height"], 
-                                       width=kwargs["width"])
+    def __init__(self, model, detailed_plot, is_ic,
+                 cf_cmap, heatmap_cmap, **layout_kwargs):
+        super().__init__(**layout_kwargs)
 
-        # Allow detailed site plot and overview-map plot to use different 
-        # settings by checking for a flag
-        self.detailed_plot = kwargs["detailed_plot"]
+        self.model = model
+        self.detailed_plot = detailed_plot
+        cfg = model.config
 
-        if self.detailed_plot:
+        if detailed_plot:
             # Listen for signals
             self.on_changes_signal = blinker.Signal()
             self.on_cf_pick_signal = blinker.Signal()
 
-        self.gui_instance = kwargs["gui_instance"]
-        self.site_number = kwargs["site_number"]
-        self.site_data = self.gui_instance.densetc_data[self.site_number]
-        self.site_analysis = self.gui_instance.densetc_analysis[self.site_number]
-
         # Allow user to change cmaps used for plots
-        self.cf_cmap = matplotlib.colormaps[kwargs["cf_cmap"]]
-        self.heatmap_cmap = kwargs["heatmap_cmap"]
+        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        self.heatmap_cmap = heatmap_cmap
         # TODO test 48khz
         self.norm = matplotlib.colors.Normalize(
-            vmin=0, vmax=self.gui_instance.num_frequency - 1)
+            vmin=0, vmax=cfg.num_frequency - 1)
 
+        # IC responses are faster than cortical, so the latency colour
+        # range is tighter and lower. PowerNorm(0.65) stretches the low
+        # end where most onsets sit.
+        lo, hi = (1, 16) if is_ic else (5, 20)
         self.speed_cmap = cmocean.cm.speed
-        if self.gui_instance.ic_bool:
-            # 1ms-16ms with greater dynamic range for IC maps
-            self.speed_norm = matplotlib.colors.PowerNorm(0.65, 
-                                                          vmin=1, 
-                                                          vmax=16)
-        else:
-            # 5ms-20ms with greater dynamic range
-            self.speed_norm = matplotlib.colors.PowerNorm(0.65, 
-                                                          vmin=5, 
-                                                          vmax=20)
+        self.speed_norm = matplotlib.colors.PowerNorm(0.65, vmin=lo, vmax=hi)
 
-        # User changes will be reflected in non-saved variables. A site can be 
-        # reset to the analysis default by copying the saved versions to the 
-        # non-saved variables. Any changes the user wants to save will be 
-        # copied into the saved variables, and then database will be updated.
-        self.cf_idx = self.site_analysis["cf_idx"]
-        self.saved_cf_idx = self.site_analysis["cf_idx"]
-        self.thresh_idx = self.site_analysis["threshold_idx"]
-        self.saved_thresh_idx = self.site_analysis["threshold_idx"]
-        self.onset = self.site_analysis["onset_ms"]
-        self.saved_onset = self.site_analysis["onset_ms"]
-        self.offset = self.site_analysis["offset_ms"]
-        self.saved_offset = self.site_analysis["offset_ms"]
-        self.peak = self.site_analysis["peak_ms"]
-        self.saved_peak = self.site_analysis["peak_ms"]
-        self.peak_driven_rate = self.site_analysis["peak_driven_rate_hz"]
-        self.saved_peak_driven_rate = self.site_analysis["peak_driven_rate_hz"]
-        self.spont_rate = self.site_analysis["spont_firing_rate_hz"]
-        self.bw_idx = {lvl: self.site_analysis[f"bw{lvl}_idx"].copy()
-                       for lvl in BW_LEVELS}
-        self.saved_bw_idx = {lvl: self.site_analysis[f"bw{lvl}_idx"].copy()
-                             for lvl in BW_LEVELS}
-        self.continuous_bw_idx = self.site_analysis["continuous_bw_idx"].copy()
-        self.saved_continuous_bw_idx = self.site_analysis["continuous_bw_idx"].copy()
-        try:
-            self.sdf = self.site_analysis["bb_sdf"].copy()
-        except KeyError:  # Analysis was made prior to versions adding sdf's
-            self.sdf = 0
-        try:
-            self.saved_marked = self.site_analysis["marked"]
-            self.marked = self.saved_marked
-        except KeyError:  # Analysis was made prior to adding marks
-            self.saved_marked = False
-            self.marked = False
-
-        # Initialize possible plot options
+        # Display toggles
+        self.use_smooth_tc = False
+        self.use_lineplot = False
+        self.use_heatmap = False
+        self.use_contour = False
+        self.use_bw = True
         self.manually_hidden = False
+        if detailed_plot:
+            self.active = False
+            self.bin_size = 1
+            self.max_bubble_size = 30
+        else:
+            self.active = True
+            self.bin_size = 5
+            self.max_bubble_size = 6
+
+        # Artist handles, populated on render
         self.bubble = None
         self.line = None
         self.heatmap = None
         self.psth = None
-        self.fire_txt = None
-        self.cf_txt = None
         self.latency_txt = None
-        self.use_smooth_tc = False
-        self.smooth_tuning_curve = None
-        self.filtered_tuning_curve = None
-        self.tuning_curve_contour = None
-        self.use_lineplot = False
-        self.use_heatmap = False
         self.cf_marker = None
-        self.bw_lines = {lvl: None for lvl in BW_LEVELS}
-        self.bw_markers = {lvl: [None, None] for lvl in BW_LEVELS}
-        self.bw_press = {lvl: [False, False] for lvl in BW_LEVELS}
         self.contour_line = None
-        self.picking_cf = False
-        self.picking_bw = False
-        self.bw_pressed = False
-        self.use_bw = True
-        if self.detailed_plot:
-            self.active = False
-            self.use_contour = False #True
-            self.bin_size = 1
-        else:
-            self.active = True
-            self.use_contour = False
-            self.bin_size = 5
-
         self.sdf_line = None
-
-        # Initialize latency/spont line properties
+        self.spont_line = None
         self.onset_line = None
         self.offset_line = None
-        self.spont_line = None
+        self.bw_lines = {lvl: None for lvl in cfg.bw_levels_db}
+        self.bw_markers = {lvl: [None, None] for lvl in cfg.bw_levels_db}
 
-        # Initialize latency interaction flags (switched to 1 when user clicks 
-        # on a latency line)
-        self.onset_press = 0
-        self.offset_press = 0
+        # Interaction flags
+        self.onset_press = False
+        self.offset_press = False
+        self.picking_cf = False
+        self.bw_pressed = False
+        self.bw_press = {lvl: [False, False] for lvl in cfg.bw_levels_db}
 
-        # All bubbles in a plot will be drawn in relation to this maximum. 
-        # Change if wanted.
-        self.max_bubble_size = 6
-
-        # Get TC for this site
-        site_df = pd.DataFrame(self.site_data["spiketrains"])
-        self.tuning_curve_df = afunc.get_tuning_curve_dataframe(site_df)
-        self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                lambda x: 
-                    afunc.remove_spont(x, 
-                                       driven_onset_ms=self.onset, 
-                                       driven_offset_ms=self.offset,
-                                       spont_onset_ms=400 - (self.offset - 
-                                                             self.onset),
-                                       spont_offset_ms=400)
-                    if ((x is not None) and (not np.any(np.isnan(x)))) 
-                    else 0)).astype(np.uint8)
-
-        self.ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-            self.tuning_curve_df, 
-            driven_onset_ms=self.onset, 
-            driven_offset_ms=self.offset,
-            spont_onset_ms=400 - (self.offset - self.onset),
-            spont_offset_ms=400)
-        self.ttest_tc = afunc.ttest_driven_vs_spont_tc(*self.ttest_spike_counts)
-        self.saved_contour_tc = afunc.ttest_analyze_tuning_curve(self.ttest_tc)[0]
-        # Threshold so only 1 contour level is drawn
-        self.saved_contour_tc[0 < self.saved_contour_tc] = 1
-        self.contour_tc = self.saved_contour_tc.copy()
-
-        # Get values and indices from tuning curve array for bubble / line plot
-        self.row, self.col = np.where(0 < self.raw_tuning_curve)
-        self.val = self.raw_tuning_curve[self.row, self.col]
+        # Last-rendered TC values, kept so update_bubble_size() can
+        # rescale without refetching the array.
+        self.row = self.col = self.val = np.array([])
 
         # Generate bubble plot and psth
         self.fig, self.ax = plt.subplots(2, 1)
-        self.ax[0].axis("off")
-        self.ax[1].axis("off")
-        self.raw_psth = np.array(self.site_analysis["psth"])
-        if self.cf_idx is None:
-            self.bubble_color = "r"
-            self.lat_color = "m"
-        else:
-            self.bubble_color = self.cf_cmap(self.norm(self.cf_idx))
-            self.lat_color = self.speed_cmap(self.speed_norm(self.onset))
-
-        self.bubble_plot()
-        self.psth_plot()
 
         # Aesthetics
         self.fig.patch.set_alpha(0)
         self.fig.subplots_adjust(wspace=0, hspace=0)
+        
+        if not detailed_plot:
+            self.bubble_plot()
+            self.psth_plot()
+        else:
+            self.ax[0].axis("off")
+            self.ax[1].axis("off")
+
         # Generate Kivy widget for displaying in GUI
         self.figure_canvas = FigureCanvas(self.fig)
 
@@ -1689,36 +1605,277 @@ class SitePlot(RelativeLayout):
 
         self.add_widget(self.figure_canvas)
 
-    def mouse_click_event(self, event):
-        """User interaction with latency or bandwidth lines."""
-        event.x, event.y = self.to_window(*self.to_parent(event.x, event.y))
-        if self.detailed_plot:
-            if self.active:
-                """
-                Checking event.inaxes is unpredictable when x, y need 
-                transformation (as they do here), since event.inaxes is created
-                before the transformation is done (and will return None in some
-                cases at the edge of axes. No good!). Instead, transform x, y 
-                into axes to check if point falls inside bounding box (values 
-                between 0-1 fall inside axes, other values are outside).
-                """
-                x_coor_ax0, y_coor_ax0 = \
-                    self.ax[0].transAxes.inverted().transform([event.x, 
-                                                               event.y])
-                x_coor_ax1, y_coor_ax1 = \
-                    self.ax[1].transAxes.inverted().transform([event.x, 
-                                                               event.y])
-                if (0 <= x_coor_ax0 <= 1) and (0 <= y_coor_ax0 <= 1):
-                    self.on_pick_line(event)
-                elif (0 <= x_coor_ax1 <= 1) and (0 <= y_coor_ax1 <= 1):
-                    if self.picking_cf:
-                        self.pick_cf(event)
-                    elif self.use_bw:
-                        # Only allow pick_bw() if bw's are visible
-                        self.pick_bw(event)
+    # -- shortcuts ------------------------------------------------------
+    @property
+    def st(self):
+        """Working analysis state (model.working). All edits go here."""
+        return self.model.working
+
+    @property
+    def bubble_color(self):
+        cf = self.st.cf_idx
+        return "r" if cf is None else self.cf_cmap(self.norm(cf))
+
+    @property
+    def lat_color(self):
+        # Non-responsive sites (no CF) get a sentinel colors for TC and PSTH.
+        if self.st.cf_idx is None:
+            return "m"
+        return self.speed_cmap(self.speed_norm(self.st.onset))
+    
+    def _current_tc(self):
+        """
+        TC array for the active rendering, respecting use_smooth_tc.
+        Memoised on (onset, offset) inside the model, so calling this on
+        every redraw is free unless latencies moved.
+        """
+        if self.use_smooth_tc:
+            return self.model.ttest_tc()
+        return self.model.raw_tc()
+
+    @staticmethod
+    def _scale_sizes(vals, max_size):
+        """
+        Scale to [0, max_size], appending a 0 so the full range is used
+        (otherwise the lowest spike count maps to size 0). Returns the
+        input unchanged if it's empty.
+        """
+        try:
+            return minmax_scale(list(vals) + [0],
+                                feature_range=(0, max_size))[:-1]
+        except TypeError:
+            return vals
+    
+    # -- full renders ---------------------------------------------------
+    def re_plot(self, axis_visible="off", min_y=None):
+        """Re-plot TC."""
+        if self.use_lineplot:
+            self.line_plot(axis_visible=axis_visible)
+        elif self.use_heatmap:
+            self.heatmap_plot(axis_visible=axis_visible)
         else:
-            # Map-wide axes coords don't line up with event coords even after
-            # this transformation
+            self.bubble_plot(axis_visible=axis_visible)
+        self.psth_plot(min_y=min_y)
+
+    def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
+        """Update bubble plot or heatmap colors."""
+        self.heatmap_cmap = heatmap_cmap
+        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        # TODO allow user to change No CF color (default is red)
+        if self.use_heatmap and self.heatmap is not None:
+            self.heatmap.set_cmap(self.heatmap_cmap)
+        elif not self.use_lineplot and self.bubble is not None:
+            self.bubble.update({"facecolors": self.bubble_color})
+
+    def bubble_plot(self, axis_visible="off", axis_color="xkcd:white"):
+        ax = self.ax[1]
+        cfg = self.model.config
+        tc = self._current_tc()
+        self.row, self.col = np.where(tc > 0)
+        self.val = tc[self.row, self.col]
+
+        ax.clear()
+        scaled = self._scale_sizes(self.val, self.max_bubble_size)
+        self.bubble = ax.scatter(x=self.col, y=self.row, s=scaled ** 2,
+                                 edgecolors="black", lw=0.5,
+                                 c=self.bubble_color)
+        ax.set_facecolor(axis_color)
+        self._draw_tc_overlays(ax)
+        ax.set_xlim([0, cfg.num_frequency])
+        ax.set_ylim([0, cfg.num_intensity])
+        ax.axis(axis_visible)
+
+    def line_plot(self, axis_visible="on", axis_color="xkcd:black"):
+        """Matches older analysis plotting style (tc_exploror, iykyk)."""
+        ax = self.ax[1]
+        cfg = self.model.config
+        max_len = 1
+        tc = self._current_tc()
+        self.row, self.col = np.where(tc > 0)
+        self.val = tc[self.row, self.col]
+
+        ax.clear()
+        scaled = self._scale_sizes(self.val, max_len)
+        segs = [[[x, y + 0.25], [x, y + 0.25 - s]]
+                for x, y, s in zip(self.col, self.row, scaled)]
+        self.line = LineCollection(segs, linewidths=2, colors="y")
+        ax.add_collection(self.line)
+        ax.set_facecolor(axis_color)
+        self._draw_tc_overlays(
+            ax, contour_color="xkcd:white" if self.detailed_plot else None)
+        ax.set_xlim([0, cfg.num_frequency])
+        ax.set_ylim([0, cfg.num_intensity])
+        ax.axis(axis_visible)
+
+    def heatmap_plot(self, axis_visible="on"):
+        """For fun and profit (and heat)."""
+        ax = self.ax[1]
+        cfg = self.model.config
+        tc = self._current_tc()
+
+        ax.clear()
+        self.heatmap = ax.imshow(tc, cmap=self.heatmap_cmap, aspect="auto")
+        self._draw_tc_overlays(
+            ax, contour_color="xkcd:white" if self.detailed_plot else None)
+        ax.set_xlim([0, cfg.num_frequency - 1])
+        ax.set_ylim([0, cfg.num_intensity - 1])
+        ax.axis(axis_visible)
+
+    def _draw_tc_overlays(self, ax, contour_color=None):
+        """
+        DCF marker, BW lines/markers, and contour on top of whichever TC
+        rendering just populated `ax`. Dark-background renderings pass
+        a white contour_color; None uses matplotlib's default cycle.
+        """
+        cfg = self.model.config
+        st = self.st
+
+        if self.use_bw and st.cf_idx is not None:
+            for lvl in cfg.bw_levels_db:
+                idx = st.bw_idx[lvl]
+                if idx[0] is None:
+                    continue
+                y = st.thresh_idx + cfg.bw_row_offset(lvl)
+                self.bw_lines[lvl] = ax.plot(idx, [y, y], "r", lw=1.5)[0]
+                if self.detailed_plot:
+                    self.bw_markers[lvl][0] = ax.plot(
+                        idx[0], y, "rd", ms=8, picker=5)[0]
+                    self.bw_markers[lvl][1] = ax.plot(
+                        idx[1], y, "rd", ms=8, picker=5)[0]
+
+        if self.use_contour:
+            contour = self.model.contour_tc()
+            if contour_color:
+                self.contour_line = ax.contour(contour, levels=[0],
+                                               colors=contour_color)
+            else:
+                self.contour_line = ax.contour(contour, levels=[0])
+
+        if st.cf_idx is not None:
+            self.cf_marker = ax.plot(st.cf_idx, st.thresh_idx,
+                                     "r*", ms=8, alpha=0.5)[0]
+
+    def psth_plot(self, min_y=None):
+        ax = self.ax[0]
+        cfg = self.model.config
+        st = self.st
+        raw = self.model.raw_psth
+        sweep = cfg.sweep_length_ms
+        bin_size = self.bin_size
+
+        ax.clear()
+        if bin_size in (1, 5):
+            num_bins = round((sweep - 1) / bin_size)
+            binned = np.histogram(range(len(raw)), bins=num_bins,
+                                  weights=raw)[0]
+        else:
+            binned = raw
+            num_bins = len(binned)
+
+        hist_peak = int(np.argmax(binned))
+        # Quick visual peak rate (not the driven rate), and it changes
+        # with bin size. Just a label, not an analysis output.
+        # TODO Clarity and explicitness on the user end is a good thing to aim for
+        ms_mult = 1000 // bin_size
+        peak_rate = int(round((binned[hist_peak] * ms_mult) / cfg.num_tones))
+
+        self.psth = ax.hist(range(len(raw)), weights=raw, bins=num_bins,
+                            alpha=1, color=self.lat_color,
+                            edgecolor="#fdfdfe", lw=0.4,
+                            histtype="stepfilled")
+
+        if self.detailed_plot:
+            self.sdf_line = ax.plot(
+                self.model.sdf * bin_size * cfg.num_tones,
+                lw=2, color="xkcd:amber")[0]
+
+        # If a minimum max y-lim value is set (so small Hz do indeed look 
+        # small), set it IF it is larger than current
+        if min_y:
+            min_y_counts = (min_y / ms_mult) * cfg.num_tones
+            if ax.get_ylim()[1] < min_y_counts:
+                ax.set_ylim([0, min_y_counts])
+                y_val = min_y_counts
+            else:
+                y_val = binned[hist_peak]
+        else:
+            y_val = binned[hist_peak]
+
+        cf_val = ("-" if st.cf_idx is None
+                  else f"{cfg.frequencies_hz[st.cf_idx] / 1000:.1f}")
+        self.latency_txt = ax.annotate(
+            f"On: {st.onset}, Pk: {st.peak}, Off: {st.offset}\n"
+            f"Rate: {peak_rate} Hz, CF: {cf_val} kHz",
+            (1.25, 0), xytext=[st.offset + 5, y_val],
+            size=10, va="top", name="Segoe UI", weight="bold",
+            color="xkcd:dark blue")
+        ax.set_xlim([0, sweep - 1])
+
+        # If detailed plot, plot spontaneous and SDF
+        if self.detailed_plot:
+            # Spont was calculated at 1ms bin size
+            spont = (self.model.spont_rate / 1000) * bin_size * cfg.num_tones
+            self.spont_line = ax.plot([0,sweep-1], [spont,spont], "c", lw=2)[0]
+
+        # Plot latency lines on psth
+        lat_lw = 3 if self.detailed_plot else 1
+        self.onset_line = ax.plot([st.onset, st.onset], [0, y_val],
+                                  "r", lw=lat_lw, picker=2)[0]
+        self.offset_line = ax.plot([st.offset, st.offset], [0, y_val],
+                                   "r", lw=lat_lw, picker=2)[0]
+        ax.axis("off")
+
+    # -- partial updates during latency drag ----------------------------
+    def update_bubble(self):
+        tc = self._current_tc()
+        self.row, self.col = np.where(tc > 0)
+        self.val = tc[self.row, self.col]
+        scaled = self._scale_sizes(self.val, self.max_bubble_size)
+        self.bubble.update({"offsets": list(zip(self.col, self.row)),
+                            "sizes": scaled ** 2})
+
+    def update_bubble_size(self):
+        """Rescale existing bubbles without refetching the TC."""
+        scaled = self._scale_sizes(self.val, self.max_bubble_size)
+        self.bubble.update({"sizes": scaled ** 2})
+
+    def update_line(self):
+        max_len = 1
+        tc = self._current_tc()
+        self.row, self.col = np.where(tc > 0)
+        self.val = tc[self.row, self.col]
+        scaled = self._scale_sizes(self.val, max_len)
+        segs = [[[x, y + 0.25], [x, y + 0.25 - s]]
+                for x, y, s in zip(self.col, self.row, scaled)]
+        self.line.set_segments(segs)
+
+    def update_heatmap(self):
+        self.heatmap.set_data(self._current_tc())
+
+    # -- mouse handling -------------------------------------------------
+    def mouse_click_event(self, event):
+        event.x, event.y = self.to_window(*self.to_parent(event.x, event.y))
+        if not self.active:
+            return
+        if self.detailed_plot:
+            # event.inaxes is unreliable after the coord transform above
+            # (it's computed pre-transform and can be None near axis
+            # edges). Transform into each axes' unit coords instead.
+            x0, y0 = self.ax[0].transAxes.inverted().transform(
+                [event.x, event.y])
+            x1, y1 = self.ax[1].transAxes.inverted().transform(
+                [event.x, event.y])
+            if 0 <= x0 <= 1 and 0 <= y0 <= 1:
+                self.on_pick_line(event)
+            elif 0 <= x1 <= 1 and 0 <= y1 <= 1:
+                if self.picking_cf:
+                    self.pick_cf(event)
+                elif self.use_bw:
+                    self.pick_bw(event)
+        else:
+            # Overview axes coords don't line up with event coords even
+            # after the transform, so let on_pick_line do its own
+            # contains() check.
             self.on_pick_line(event)
 
     def mouse_move_event(self, event):
@@ -1737,595 +1894,106 @@ class SitePlot(RelativeLayout):
         elif self.active and self.bw_pressed:
             self.off_bw()
 
-    def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
-        """Update bubble plot or heatmap colors."""
-        self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = matplotlib.colormaps[cf_cmap]
-        if self.cf_idx is not None:
-            # TODO allow user to change No CF color (default is red)
-            self.bubble_color = self.cf_cmap(self.norm(self.cf_idx))
-        if self.use_heatmap:
-            self.heatmap.set_cmap(self.heatmap_cmap)
-        elif not self.use_lineplot:
-            self.bubble.update({"facecolors": self.bubble_color})
-
-    def re_plot(self, axis_visible="off", min_y=None):
-        """Re-plot TC."""
-        if self.use_lineplot:
-            self.line_plot(axis_visible=axis_visible)
-        elif self.use_heatmap:
-            self.heatmap_plot(axis_visible=axis_visible)
-        else:
-            self.bubble_plot(axis_visible=axis_visible)
-        self.psth_plot(min_y=min_y)
-
     def on_pick_line(self, event):
-        """Initial UX for user updating latency line."""
-        if self.active:
-            if self.detailed_plot:
-                lat_lw = 5
-            else:
-                lat_lw = 1.5
-            if self.onset_line.contains(event)[0]:
-                self.onset_line.set_lw(lat_lw)
-                self.onset_press = 1
-                event.canvas.draw()
-
-            elif self.offset_line.contains(event)[0]:
-                self.offset_line.set_lw(lat_lw)
-                self.offset_press = 1
-                event.canvas.draw()
+        lat_lw = 5 if self.detailed_plot else 1.5
+        if self.onset_line.contains(event)[0]:
+            self.onset_line.set_lw(lat_lw)
+            self.onset_press = True
+            event.canvas.draw()
+        elif self.offset_line.contains(event)[0]:
+            self.offset_line.set_lw(lat_lw)
+            self.offset_press = True
+            event.canvas.draw()
 
     def move_line(self, x, y):
-        """Ongoing UX for user updating latency line."""
-        # trans_x/y are in display coordinates (see MPL doc for info for
-        # definition)
-        # Must transform into axes user data coordinates (xlim, ylim) in order
-        # to move line to appropriate x-coordinate based on mouse position
-        ax_inv = self.ax[0].transData.inverted()
-        xdata, ydata = ax_inv.transform((x, y))
+        xdata, _ = self.ax[0].transData.inverted().transform((x, y))
         if xdata is None:
             return
+        cfg = self.model.config
+        st = self.st
 
-        # TODO generalize sweep length
-        if self.onset_press and (0 <= xdata <= 400):
-            if xdata < self.offset_line.get_xdata()[0]:
-                self.onset_line.set_xdata([xdata, xdata])
-                self.onset = int(round(xdata))
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-                    peak_hist = self.raw_psth.copy()
-                    peak_hist[0:self.onset] = peak_hist[self.offset:] = 0
-                    self.peak = int(np.argmax(peak_hist))
-
-                    self.peak_driven_rate = \
-                        afunc.get_peak_driven_rate(
-                            self.raw_psth[self.onset:self.offset],
-                            self.spont_rate,
-                            self.gui_instance.num_tones)
-                    self.latency_txt.set_text(
-                        f"{self.onset}, {self.peak}, {self.offset}")
-
-                if self.use_lineplot:
-                    self.update_line()
-                elif self.use_heatmap:
-                    self.update_heatmap()
-                else:
-                    self.update_bubble()
-                self.figure_canvas.draw()
-
-        # TODO generalize sweep length
-        elif self.offset_press and (0 <= xdata <= 400):
-            if xdata > self.onset_line.get_xdata()[0]:
-                self.offset_line.set_xdata([xdata, xdata])
-                self.offset = int(round(xdata))
-                if self.detailed_plot:
-                    self.on_changes_signal.send()
-                    peak_hist = self.raw_psth.copy()
-                    peak_hist[0:self.onset] = peak_hist[self.offset:] = 0
-                    self.peak = int(np.argmax(peak_hist))
-
-                    self.peak_driven_rate = \
-                        afunc.get_peak_driven_rate(
-                            self.raw_psth[self.onset:self.offset],
-                            self.spont_rate,
-                            self.gui_instance.num_tones)
-                    self.latency_txt.set_text(
-                        f"{self.onset}, {self.peak}, {self.offset}")
-                    
-                if self.use_lineplot:
-                    self.update_line()
-                elif self.use_heatmap:
-                    self.update_heatmap()
-                else:
-                    self.update_bubble()
-                self.figure_canvas.draw()
-
-    def update_heatmap(self):
-        """Update heatmap without fully re-plotting."""
-        if self.use_smooth_tc:
-            ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-                self.tuning_curve_df, 
-                driven_onset_ms=self.onset, 
-                driven_offset_ms=self.offset,
-                spont_onset_ms=400 - (self.offset - self.onset),
-                spont_offset_ms=400)
-            tc_image = afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
+        # Onset/offset drags are identical apart from which line/field
+        # they touch and the no-crossover constraint.
+        if self.onset_press and 0 <= xdata <= cfg.sweep_length_ms \
+                and xdata < self.offset_line.get_xdata()[0]:
+            self.onset_line.set_xdata([xdata, xdata])
+            st.onset = int(round(xdata))
+        elif self.offset_press and 0 <= xdata <= cfg.sweep_length_ms \
+                and xdata > self.onset_line.get_xdata()[0]:
+            self.offset_line.set_xdata([xdata, xdata])
+            st.offset = int(round(xdata))
         else:
-            self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                lambda x: 
-                    afunc.remove_spont(x, 
-                                       driven_onset_ms=self.onset, 
-                                       driven_offset_ms=self.offset,
-                                       spont_onset_ms=400 - (self.offset - 
-                                                             self.onset),
-                                       spont_offset_ms=400)
-                    if ((x is not None) and (not np.any(np.isnan(x))))
-                    else 0)).astype(np.uint8)
-            tc_image = self.raw_tuning_curve
-
-        self.heatmap.set_data(tc_image)
-
-    def update_line(self):
-        """Update lineplot without fully re-plotting."""
-        max_line_length = 1
-        self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-            lambda x: 
-                afunc.remove_spont(x, 
-                                   driven_onset_ms=self.onset, 
-                                   driven_offset_ms=self.offset,
-                                   spont_onset_ms=400 - (self.offset - 
-                                                         self.onset),
-                                   spont_offset_ms=400) 
-                if x is not None else 0)).astype(np.uint8)
-        if self.use_smooth_tc:
-            self.filtered_tuning_curve = afunc.analyze_tuning_curve(
-                self.raw_tuning_curve)[1]
-            self.row, self.col = np.where(self.filtered_tuning_curve > 0)
-            self.val = self.filtered_tuning_curve[self.row, self.col]
-        else:
-            self.row, self.col = np.where(self.raw_tuning_curve > 0)
-            self.val = self.raw_tuning_curve[self.row, self.col]
-
-        x = self.col
-        y = self.row
-        s = self.val
-
-        try:
-            scaled_s = minmax_scale(list(s) + [0], 
-                                    feature_range=(0, max_line_length))[:-1]
-        except TypeError:
-            # Thrown if s contains no values (non-responsive site)
-            scaled_s = s
-
-        line_list = [[[x_, y_ + 0.25], [x_, y_ + 0.25 - s_]] for 
-                     x_, y_, s_ in zip(x, y, scaled_s)]
-        self.line.set_segments(line_list)
-
-    def update_bubble(self):
-        """Update bubble plot without fully re-plotting."""
-        if self.use_smooth_tc:
-            ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-                self.tuning_curve_df, 
-                driven_onset_ms=self.onset, 
-                driven_offset_ms=self.offset,
-                spont_onset_ms=400 - (self.offset - self.onset),
-                spont_offset_ms=400)
-            self.filtered_tuning_curve = \
-                afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
-            self.row, self.col = np.where(0 < self.filtered_tuning_curve)
-            self.val = self.filtered_tuning_curve[self.row, self.col]
-        else:
-            self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                lambda x: 
-                    afunc.remove_spont(x, 
-                                       driven_onset_ms=self.onset, 
-                                       driven_offset_ms=self.offset,
-                                       spont_onset_ms=400 - (self.offset - 
-                                                             self.onset),
-                                       spont_offset_ms=400)
-                    if ((x is not None) and (not np.any(np.isnan(x))))
-                    else 0)).astype(np.uint8)
-            self.row, self.col = np.where(self.raw_tuning_curve > 0)
-            self.val = self.raw_tuning_curve[self.row, self.col]
-
-        x = self.col
-        y = self.row
-        s = self.val
-
-        """
-        Scale bubble size against a maximum value. Add [0] to ensure entire 
-        dynamic range is used (otherwise lowest spike value will default to 
-        lowest bubble size -- here, 0).
-        """
-        try:
-            scaled_s = minmax_scale(
-                list(s) + [0], feature_range=(0, self.max_bubble_size))[:-1]
-        except TypeError:
-            # Thrown if s contains no values (non-responsive site)
-            scaled_s = s
-
-        offsets = np.column_stack((x, y))
-        self.bubble.update({"offsets": offsets, "sizes": scaled_s ** 2})
-
-    def update_bubble_size(self):
-        """
-        Quick function to only update the size of the bubbles. Call 
-        update_bubble() instead if positions or values need updating.
-        """
-        s = self.val
-
-        """
-        Scale bubble size against a maximum value. Add [0] to ensure entire 
-        dynamic range is used (otherwise lowest spike value will default to 
-        lowest bubble size -- here, 0).
-        """
-        try:
-            scaled_s = minmax_scale(
-                list(s) + [0], feature_range=(0, self.max_bubble_size))[:-1]
-        except TypeError:
-            # Thrown if s contains no values (non-responsive site)
-            scaled_s = s
-
-        self.bubble.update({"sizes": scaled_s ** 2})
-
-    def _draw_tc_overlays(self, ax, contour_color=None):
-        """
-        Draw CF marker, BW lines/markers, and contour on top of whichever
-        TC rendering (bubble / line / heatmap) just populated `ax`.
-
-        `contour_color` lets the dark-background plots (line, heatmap in
-        detailed view) force a white contour; None uses matplotlib's cycle.
-        """
-        if self.use_bw and (self.cf_idx is not None):
-            for lvl in BW_LEVELS:
-                idx = self.bw_idx[lvl]
-                if idx[0] is None:
-                    continue
-                y = self.thresh_idx + lvl // 5  # assumes 5 dB steps — TODO issue #13
-                self.bw_lines[lvl] = ax.plot(idx, [y, y], "r", lw=1.5)[0]
-                if self.detailed_plot:
-                    self.bw_markers[lvl][0] = ax.plot(
-                        idx[0], y, "rd", ms=8, picker=5)[0]
-                    self.bw_markers[lvl][1] = ax.plot(
-                        idx[1], y, "rd", ms=8, picker=5)[0]
-
-        if self.use_contour:
-            if contour_color:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0],
-                                               colors=contour_color)
-            else:
-                self.contour_line = ax.contour(self.contour_tc, levels=[0])
-
-        if self.cf_idx is not None:
-            self.cf_marker = ax.plot(self.cf_idx, self.thresh_idx,
-                                     "r*", ms=8, alpha=0.5)[0]
-
-    def bubble_plot(self, ax=None, x=None, y=None, s=None, color=None, 
-                    axis_visible="off", axis_color="xkcd:white"):
-        """
-        Done for SiteScreen.__init__(). It updates bubble size and axis, but 
-        doesn't (currently) have this data so it was easier at the time of 
-        writing to just make the defaults available and simply call 
-        .bubble_plot() to get modified version of an existing plot.
-        """
-        if ax is None:
-            ax = self.ax[1]
-        if None in [x, y, s]:
-            # User must pass all 3 kwargs if they want to plot something 
-            # different than default plot behavior
-
-            if self.use_smooth_tc:
-                ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-                    self.tuning_curve_df, 
-                    driven_onset_ms=self.onset, 
-                    driven_offset_ms=self.offset,
-                    spont_onset_ms=400 - (self.offset - self.onset),
-                    spont_offset_ms=400)
-                self.filtered_tuning_curve = \
-                    afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
-                self.row, self.col = np.where(0 < self.filtered_tuning_curve)
-                self.val = self.filtered_tuning_curve[self.row, self.col]
-            else:
-                self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                    lambda x: 
-                        afunc.remove_spont(x, 
-                                           driven_onset_ms=self.onset,
-                                           driven_offset_ms=self.offset,
-                                           spont_onset_ms=400 - (self.offset -
-                                                                 self.onset),
-                                           spont_offset_ms=400)
-                       if ((x is not None) and (not np.any(np.isnan(x))))
-                       else 0)).astype(np.uint8)
-                self.row, self.col = np.where(0 < self.raw_tuning_curve)
-                self.val = self.raw_tuning_curve[self.row, self.col]
-
-            x = self.col
-            y = self.row
-            s = self.val
-
-        if color is None:
-            color = self.bubble_color
-
-        ax.clear()
-        """
-        Scale bubble size against a maximum value. Add [0] to ensure entire 
-        dynamic range is used (otherwise lowest spike value will default to 
-        lowest bubble size -- here, 0).
-        """
-        try:
-            scaled_s = minmax_scale(
-                list(s) + [0], feature_range=(0, self.max_bubble_size))[:-1]
-        except TypeError:
-            # Thrown if s contains no values (non-responsive site)
-            scaled_s = s
-        self.bubble = ax.scatter(x=x, y=y, s=scaled_s ** 2, edgecolors="black",
-                                 lw=0.5, color=color)
-        ax.set_facecolor(axis_color)
-
-        self._draw_tc_overlays(ax)
-
-        ax.set_xlim([0, self.gui_instance.num_frequency])
-        ax.set_ylim([0, self.gui_instance.num_intensity])
-        ax.axis(axis_visible)
-
-    def line_plot(self, ax=None, x=None, y=None, s=None, axis_visible="on", 
-                  axis_color="xkcd:black"):
-        """
-        Old tc_explore style line plot.
-        """
-        max_line_length = 1
-        if ax is None:
-            ax = self.ax[1]
-        if None in [x, y, s]:
-            # User must pass all 3 kwargs if they want to plot something 
-            # different than default plot behavior
-            self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                lambda x: 
-                    afunc.remove_spont(x, 
-                                       driven_onset_ms=self.onset, 
-                                       driven_offset_ms=self.offset,
-                                       spont_onset_ms=400 - (self.offset - 
-                                                             self.onset),
-                                       spont_offset_ms=400)
-                    if ((x is not None) and (not np.any(np.isnan(x))))
-                    else 0)).astype(np.uint8)
-            if self.use_smooth_tc:
-                self.filtered_tuning_curve = afunc.analyze_tuning_curve(
-                    self.raw_tuning_curve)[1]
-                self.row, self.col = np.where(self.filtered_tuning_curve > 0)
-                self.val = self.filtered_tuning_curve[self.row, self.col]
-            else:
-                self.row, self.col = np.where(self.raw_tuning_curve > 0)
-                self.val = self.raw_tuning_curve[self.row, self.col]
-
-            x = self.col
-            y = self.row
-            s = self.val
-
-        ax.clear()
-        try:
-            scaled_s = minmax_scale(list(s) + [0], 
-                                    feature_range=(0, max_line_length))[:-1]
-        except TypeError:
-            # Thrown if s contains no values (non-responsive site)
-            scaled_s = s
-
-        line_list = [[[x_, y_+0.25], [x_, y_+0.25 - s_]] for 
-                     x_, y_, s_ in zip(x, y, scaled_s)]
-        self.line = LineCollection(line_list, linewidths=2, colors="y")
-        ax.add_collection(self.line)
-        ax.set_facecolor(axis_color)
-
-        self._draw_tc_overlays(
-            ax, contour_color="xkcd:white" if self.detailed_plot else None)
-        
-        ax.set_xlim([0, self.gui_instance.num_frequency])
-        ax.set_ylim([0, self.gui_instance.num_intensity])
-        ax.axis(axis_visible)
-
-    def heatmap_plot(self, ax=None, tc_image=None, axis_visible="on"):
-        """
-        I like heatmaps and bubbles.
-        """
-        if ax is None:
-            ax = self.ax[1]
-        if tc_image is None:
-            # User must pass all 3 kwargs if they want to plot something 
-            # different than default plot behavior
-            self.raw_tuning_curve = np.array(self.tuning_curve_df.map(
-                lambda x: 
-                    afunc.remove_spont(x, 
-                                       driven_onset_ms=self.onset, 
-                                       driven_offset_ms=self.offset,
-                                       spont_onset_ms=400 - (self.offset - 
-                                                             self.onset),
-                                       spont_offset_ms=400)
-                    if ((x is not None) and (not np.any(np.isnan(x))))
-                    else 0)).astype(np.uint8)
-            if self.use_smooth_tc:
-                tc_image = afunc.analyze_tuning_curve(self.raw_tuning_curve)[1]
-            else:
-                tc_image = self.raw_tuning_curve
-
-        ax.clear()
-        self.heatmap = ax.imshow(tc_image, cmap=self.heatmap_cmap, 
-                                 aspect="auto")
-
-        self._draw_tc_overlays(
-            ax, contour_color="xkcd:white" if self.detailed_plot else None)
-        
-        ax.set_xlim([0, self.gui_instance.num_frequency-1])
-        ax.set_ylim([0, self.gui_instance.num_intensity-1])
-        ax.axis(axis_visible)
-
-    def psth_plot(self, ax=None, axis_visible="off", bin_size=None, 
-                  sweep_length=399, min_y=None):
-        """
-        Plots PSTH (originally done in __init__; breaking it out allows updates 
-        to bin size, colors, markers, spont line etc.
-        """
-        if ax is None:
-            ax = self.ax[0]
-        if bin_size is None:
-            bin_size = self.bin_size
-
-        ax.clear()
-        if bin_size in [1, 5]:  # Currently only 1 and 5ms are supported.
-            # Assumes 400ms tone sweep. Pass value for speech, or other.
-            num_bins = round(sweep_length / bin_size)
-            psth_binned = np.histogram(range(len(self.raw_psth)), 
-                                       bins=num_bins, weights=self.raw_psth)[0]
-        else:
-            # raw_psth should already be 1ms binned.
-            psth_binned = self.raw_psth
-            num_bins = len(psth_binned)
-
-        hist_peak = np.argmax(psth_binned)
-        """
-        Get peak spike rate. This is not the same as driven rate. It also 
-        changes depending on bin-size selection. This is just to be used as a 
-        quick visual tool for inspecting site without needing psth y-axis 
-        clutter.
-        """
-        if bin_size == 5:
-            ms_multiplier = 200  # Get rate in Hz; 5ms * 200 = 1s
-        else:
-            ms_multiplier = 1000  # 1ms * 1000
-        peak_spike_rate = int(round((psth_binned[hist_peak] * ms_multiplier) / 
-                                    self.gui_instance.num_tones))
-
-        # Plot psth with text showing peak-firing rate and onset, peak, offset
-        # latencies
-        self.psth = ax.hist(range(len(self.raw_psth)), weights=self.raw_psth, 
-                            bins=num_bins, alpha=1, color=self.lat_color, 
-                            edgecolor="#fdfdfe", lw=0.4, histtype="stepfilled")
+            return
 
         if self.detailed_plot:
-            self.sdf_line = ax.plot(np.array(self.sdf)*bin_size*self.gui_instance.num_tones, lw=2, 
-                                    color="xkcd:amber")[0]
+            self.on_changes_signal.send()
+            raw = self.model.raw_psth
+            peak_hist = raw.copy()
+            peak_hist[:st.onset] = peak_hist[st.offset:] = 0
+            st.peak = int(np.argmax(peak_hist))
+            st.peak_driven_rate = afunc.get_peak_driven_rate(
+                raw[st.onset:st.offset], self.model.spont_rate,
+                cfg.num_tones)
+            self.latency_txt.set_text(
+                f"{st.onset}, {st.peak}, {st.offset}")
 
-        # If a minimum max y-lim value is set (so small Hz do indeed look 
-        # small), set it IF it is larger than current
-        if min_y:
-            # Convert min_y (in Hz) to # of spikes (ylim value)
-            min_y = (min_y / ms_multiplier) * self.gui_instance.num_tones
-            ylim = ax.get_ylim()
-            if ylim[1] < min_y:
-                ax.set_ylim([0, min_y])
-                y_val = min_y
-            else:
-                y_val = psth_binned[hist_peak]
+        if self.use_lineplot:
+            self.update_line()
+        elif self.use_heatmap:
+            self.update_heatmap()
         else:
-            y_val = psth_binned[hist_peak]
-
-        if self.cf_idx is None:
-            cf_val = "-"
-        else:
-            cf_val = f"{self.gui_instance.frequency[self.cf_idx]/1000:.1f}"
-
-        self.latency_txt = ax.annotate(
-            f"On: {self.onset}, Pk: {self.peak}, Off: {self.offset}\n"
-            f"Rate: {peak_spike_rate} Hz, CF: {cf_val} kHz",
-            (1.25, 0), 
-            xytext=[self.offset+5, y_val], 
-            size=10, 
-            va="top", 
-            name="Segoe UI",
-            weight="bold", 
-            color="xkcd:dark blue")
-
-        ax.set_xlim([0, sweep_length-1])
-
-        # If detailed plot, plot spontaneous and SDF
-        if self.detailed_plot:
-            # Spont was calculated at 1ms bin size
-            spont = (self.spont_rate / 1000) * bin_size * self.gui_instance.num_tones
-            self.spont_line = ax.plot([0, sweep_length-1], [spont, spont], 
-                                      "c", lw=2)[0]
-
-        # Plot latency lines on psth
-        if self.detailed_plot:
-            lat_lw = 3
-        else:
-            lat_lw = 1
-
-        self.onset_line = ax.plot([self.onset, self.onset], [0, y_val],
-                                  "r", lw=lat_lw, picker=2)[0]
-        self.offset_line = ax.plot([self.offset, self.offset], [0, y_val],
-                                   "r", lw=lat_lw, picker=2)[0]
-
-        ax.axis(axis_visible)
+            self.update_bubble()
+        self.figure_canvas.draw()
 
     def off_pick(self):
         """Final UX for user updating latency line."""
-        if self.detailed_plot:
-            lat_lw = 3
-        else:
-            lat_lw = 1
+        lat_lw = 3 if self.detailed_plot else 1
         self.onset_line.set_lw(lat_lw)
-        self.onset_press = 0
         self.offset_line.set_lw(lat_lw)
-        self.offset_press = 0
+        self.onset_press = self.offset_press = False
         if self.detailed_plot:
-            # TODO probably can condense with above, but just testing right now
-            # Update psth with new firing rate / text positions
+            # Full PSTH re-render to reposition the annotation and
+            # refresh the rate text.
             self.psth_plot()
-
         self.figure_canvas.draw()
 
     def pick_cf(self, event):
         """
-        Quick function to let user manually select new cf and threshold from 
-        tuning curve plot based on mouse_click_event..
-        Must do this roundabout way of checking, because ginput() 
-        implementation appears to crash Kivy
+        User clicked the TC plot to set CF/threshold. Snap to the
+        nearest grid index, then seed/clear BW handles according to
+        which rows are still on the grid at the new threshold.
         """
-        # Transform Kivy event coords into figure coords, then check if mouse
-        # event occurs inside axes coords (also transformed into figure 
-        # coords). If event is outside of x or y limits of TC axis, 
-        # return (ignore)
         xdata, ydata = self.ax[1].transData.inverted().transform(
             (event.x, event.y))
-        if (xdata is None) or (ydata is None):
+        if xdata is None or ydata is None:
             return
-        # Update CF and Thresh, and move CF marker to new position
-        self.cf_idx = int(round(xdata))
-        self.thresh_idx = int(round(ydata))
+        cfg = self.model.config
+        st = self.st
+
+        st.cf_idx = int(round(xdata))
+        st.thresh_idx = int(round(ydata))
         if self.cf_marker is None:
-            self.cf_marker = self.ax[1].plot(self.cf_idx, self.thresh_idx, 
+            self.cf_marker = self.ax[1].plot(st.cf_idx, st.thresh_idx,
                                              "r*", ms=8, alpha=0.5)[0]
         else:
-            self.cf_marker.set_xdata([self.cf_idx])
-            self.cf_marker.set_ydata([self.thresh_idx])
-        freq_range = self.gui_instance.num_frequency
-        int_range = self.gui_instance.num_intensity
-        # Any BW whose row now sits above the intensity grid is cleared;
-        # any that's newly in-range but was previously absent gets a wide
-        # default so the user has handles to drag.
-        for lvl in BW_LEVELS:
-            row = self.thresh_idx + lvl // 5  # assumes 5 dB steps — TODO issue #13
-            if row <= int_range:
-                if self.bw_idx[lvl][0] is None:
-                    self.bw_idx[lvl] = [10, freq_range - 10]
-            else:
-                self.bw_idx[lvl] = [None, None]
+            self.cf_marker.set_xdata([st.cf_idx])
+            self.cf_marker.set_ydata([st.thresh_idx])
 
-        # Un-flag picking_cf
+        for lvl in cfg.bw_levels_db:
+            row = st.thresh_idx + cfg.bw_row_offset(lvl)
+            if row < cfg.num_intensity:
+                if st.bw_idx[lvl][0] is None:
+                    st.bw_idx[lvl] = [10, cfg.num_frequency - 10]
+            else:
+                st.bw_idx[lvl] = [None, None]
+
         self.picking_cf = False
-        # Signal that cf was picked
         self.on_cf_pick_signal.send()
         self.on_changes_signal.send()
 
     def pick_bw(self, event):
-        """
-        Bubbles and line plots update y-axis position of bw10-40. Picking a 
-        marker on the end of these lines will allow the user to adjust the 
-        x-axis position of bw's at a site. Similar to pick and move of latency
-        lines.
-        """
-        # TODO currently doesn't do anything to continuous_bw
-        for lvl in BW_LEVELS:
+        """Grab one BW marker for dragging."""
+        for lvl in self.model.config.bw_levels_db:
             markers = self.bw_markers[lvl]
             if markers[0] is None:
                 continue
@@ -2335,23 +2003,22 @@ class SitePlot(RelativeLayout):
                     markers[side].set_ms(12)
                     self.bw_press[lvl][side] = True
                     event.canvas.draw()
-                    return  # one marker at a time
+                    return
 
     def move_bw(self, event_x, event_y):
-        """
-        Drag the currently-held BW marker, clamped to [0, max_freq_idx] and
-        prevented from crossing its partner.
-        """
-        ax_inv = self.ax[1].transData.inverted()
-        xdata, _ = ax_inv.transform((event_x, event_y))
+        """Drag the held BW marker, clamped and non-crossing."""
+        xdata, _ = self.ax[1].transData.inverted().transform(
+            (event_x, event_y))
         if xdata is None:
             return
-        max_idx = self.gui_instance.num_frequency - 1
+        cfg = self.model.config
+        st = self.st
+        max_idx = cfg.num_frequency - 1
 
-        for lvl in BW_LEVELS:
+        for lvl in cfg.bw_levels_db:
             press = self.bw_press[lvl]
             markers = self.bw_markers[lvl]
-            idx = self.bw_idx[lvl]
+            idx = st.bw_idx[lvl]
             if press[0] and xdata < markers[1].get_xdata()[0]:
                 x = max(0, int(round(xdata)))
                 markers[0].set_xdata([x])
@@ -2369,9 +2036,8 @@ class SitePlot(RelativeLayout):
         self.figure_canvas.draw()
 
     def off_bw(self):
-        """Final UX for user updating bandwidth."""
         self.bw_pressed = False
-        for lvl in BW_LEVELS:
+        for lvl in self.model.config.bw_levels_db:
             self.bw_press[lvl] = [False, False]
             if self.bw_markers[lvl][0] is not None:
                 self.bw_markers[lvl][0].set_ms(8)
