@@ -7,12 +7,12 @@ from neo.io.brainwaref32io import BrainwareF32IO
 import pandas as pd
 from skimage.measure import label, regionprops
 import matplotlib.pyplot as plt
-from tinymongo_fix.tinymongo_fix import TinyMongoClient
 import datetime
 from colorama import Fore, Style
 import bayesian_bins as bb
 import analysis_functions as afunc
 from functools import partial
+from db_adapter import JSONStore
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
@@ -76,13 +76,8 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     # This will combine data/analysis if a database already exists.
     # That is probably not what you want. Recommend moving or deleting any
     # previous database files for the subject.
-    connection = TinyMongoClient(save_dir_path + subject_name)
-
-    # Grab database that was just created.
-    # getattr result is same as eg. connection.RAT1 if subject_name == RAT1
-    # Also, connection.RAT1.1 (with a decimal) is normally invalid syntax, 
-    # but using getattr() and passing "RAT1.1" works as expected.
-    db = getattr(connection, subject_name)
+    # TODO make that a real failure, or ask to overwrite
+    db = JSONStore(save_dir_path + subject_name)
 
     # Generate db collections
     db_metadata = db.metadata
@@ -404,6 +399,8 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         db_noiseburst_data.insert_many(burst_data_list)
         if ic_bool:
             db_noiseburst_IC_data.insert_many(burst_IC_data_list)
+
+    db.close()
 
 
 def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints, 

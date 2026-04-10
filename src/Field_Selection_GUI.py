@@ -38,12 +38,12 @@ import logging
 from kivy.uix.slider import Slider
 import analysis_functions as afunc
 import blinker
-from tinymongo_fix.tinymongo_fix import TinyMongoClient
 from sklearn.preprocessing import minmax_scale
 from collections import namedtuple
 from matplotlib.collections import LineCollection
 import warnings
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
+from db_adapter import JSONStore
 
 # dB-above-threshold levels at which bandwidths are measured. The y-offset
 # on the TC plot for each is level // intensity_step (currently 5 dB steps,
@@ -588,7 +588,6 @@ class FieldSelectionGUI(BoxLayout):
         self.densetc_data = None
         self.densetc_analysis = None
 
-        self.mongo_connection = None
         self.counter = 0
         self.site_screens = {}
 
@@ -817,11 +816,7 @@ class FieldSelectionGUI(BoxLayout):
             is_ic = self.ic_bool
 
             # --- DB connection & collection handles ------------------
-            self.mongo_connection = TinyMongoClient(
-                os.path.dirname(self._db_path))
-            self.subject_database = getattr(
-                self.mongo_connection,
-                os.path.splitext(os.path.basename(self._db_path))[0])
+            self.subject_database = JSONStore(self._db_path)
             self.map_metadata_collection = self.subject_database.metadata
             self.map_metadata = self.map_metadata_collection.find_one({})
             self.analysis_metadata_collection = \
@@ -847,13 +842,10 @@ class FieldSelectionGUI(BoxLayout):
 
             # --- Project configuration -------------------------------
             # Expect exactly one analysis metadata doc to carry a
-            # configuration (the auto-analysis run). $exists is what we
-            # want but tinymongo doesn't implement it; $ne against a
-            # value the field never holds is a cheap substitute -- any
-            # doc with the field matches, any doc without is skipped.
+            # configuration (the auto-analysis run).
             self.project_configuration = \
                 self.analysis_metadata_collection.find_one(
-                    {"configuration": {"$ne": False}})["configuration"]
+                    {"configuration": {"$exists": True}})["configuration"]
             self.frequency = np.sort(
                 self.project_configuration["densetc_frequency_hz"])
             self.intensity = np.sort(
