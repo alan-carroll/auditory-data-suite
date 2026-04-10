@@ -16,12 +16,19 @@ Supported:
     coll.find_one({"configuration": {"$exists": True}})
     coll.update_one({"_id": x}, {"$set": {...}})
 
-Not supported: insert, delete, $gt/$lt/$in/$ne, nested paths, projections, sort.
+Not supported: delete, $gt/$lt/$in/$ne, nested paths, projections, sort.
 Add them if something new needs them.
 """
 from functools import reduce
 from tinydb import TinyDB, Query
+from uuid import uuid4
+from copy import deepcopy
+from dataclasses import dataclass
 
+
+@dataclass(frozen=True)
+class InsertOneResult:
+    inserted_id: str
 
 class JSONStore:
     def __init__(self, path):
@@ -55,6 +62,15 @@ class Collection:
         if not query:
             raise ValueError("find_one() requires a non-empty filter")
         return self._table.get(_build_query(query))
+    
+    def insert_one(self, document):
+        if not isinstance(document, dict):
+            raise TypeError("insert_one() requires a dict document")
+
+        doc = deepcopy(document)
+        doc.setdefault("_id", str(uuid4())) # preserve tinymongo behavior
+        self._table.insert(doc)
+        return InsertOneResult(doc["_id"])
 
     def update_one(self, filter_, update):
         if set(update) != {"$set"}:
