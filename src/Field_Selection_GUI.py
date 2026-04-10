@@ -1678,7 +1678,7 @@ class SitePlot(RelativeLayout):
         scaled = self._scale_sizes(self.val, self.max_bubble_size)
         self.bubble = ax.scatter(x=self.col, y=self.row, s=scaled ** 2,
                                  edgecolors="black", lw=0.5,
-                                 c=self.bubble_color)
+                                 color=self.bubble_color)
         ax.set_facecolor(axis_color)
         self._draw_tc_overlays(ax)
         ax.set_xlim([0, cfg.num_frequency])
@@ -1831,8 +1831,8 @@ class SitePlot(RelativeLayout):
         self.row, self.col = np.where(tc > 0)
         self.val = tc[self.row, self.col]
         scaled = self._scale_sizes(self.val, self.max_bubble_size)
-        self.bubble.update({"offsets": list(zip(self.col, self.row)),
-                            "sizes": scaled ** 2})
+        offsets = np.column_stack((self.col, self.row))
+        self.bubble.update({"offsets": offsets, "sizes": scaled ** 2})
 
     def update_bubble_size(self):
         """Rescale existing bubbles without refetching the TC."""
