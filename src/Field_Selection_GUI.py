@@ -2092,7 +2092,8 @@ class SitePlot(RelativeLayout):
             # Thrown if s contains no values (non-responsive site)
             scaled_s = s
 
-        self.bubble.update({"offsets": list(zip(x, y)), "sizes": scaled_s ** 2})
+        offsets = np.column_stack((x, y))
+        self.bubble.update({"offsets": offsets, "sizes": scaled_s ** 2})
 
     def update_bubble_size(self):
         """
