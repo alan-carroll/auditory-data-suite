@@ -732,7 +732,7 @@ class FieldSelectionGUI(BoxLayout):
             # --- DB connection & collection handles ------------------
             self.subject_database = JSONStore(self._db_path)
             self.map_metadata_collection = self.subject_database.metadata
-            self.map_metadata = self.map_metadata_collection.find_one({})
+            self.map_metadata = self.map_metadata_collection.get_only()
             self.analysis_metadata_collection = \
                 self.subject_database.analysis_metadata
 
