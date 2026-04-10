@@ -10,8 +10,8 @@ _NORM_SIZE = (48, 32)
 class RecognitionResult:
     """Single number recognition outcome."""
     crop: np.ndarray
-    number: int | None
-    confidence: float
+    number: int | None = None
+    confidence: float = 0.0
     # Store metadata with result as needed (x/y coords, bbox, filename, etc.)
     meta: dict = field(default_factory=dict)
 
@@ -200,13 +200,14 @@ class DigitRecognizer:
             print(f"  [{mark}] {d}")
 
     # ────────────────────────────────────────────────────────────
-    #  Batch recognition
+    #  Recognition
     # ────────────────────────────────────────────────────────────
 
-    def recognize(self, gray_image):
+    def recognize(self, gray_image, meta={}):
+        res = RecognitionResult(crop=gray_image, meta=meta)
         blobs = self._extract_blobs(gray_image)
         if not blobs:
-            return None, 0.0
+            return res
 
         digits = []
         confidences = []
@@ -214,29 +215,14 @@ class DigitRecognizer:
             normed = self._normalize(digit_binary)
             d, score = self._match_single(normed)
             if d is None:
-                return None, 0.0
+                return res
             digits.append(d)
             confidences.append(score)
 
-        number = int("".join(str(d) for d in digits))
-        return number, sum(confidences) / len(confidences)
-
-    def recognize_batch(self, crops, metas=None):
-        if metas is None:
-            metas = [{} for _ in crops]
-        elif len(metas) != len(crops):
-            raise ValueError(
-                f"metas length ({len(metas)}) must match crops length ({len(crops)})"
-            )
-        results = []
-        for i, (crop, meta) in enumerate(zip(crops, metas)):
-            num, conf = self.recognize(crop)
-            merged_meta = dict(meta)
-            merged_meta.setdefault("_idx", i)
-            results.append(RecognitionResult(
-                crop=crop, number=num, confidence=conf, meta=merged_meta,
-            ))
-        return results
+        res.number = int("".join(str(d) for d in digits))
+        res.confidence = sum(confidences) / len(confidences)
+        
+        return res
 
     # ────────────────────────────────────────────────────────────
     #  Visual review
