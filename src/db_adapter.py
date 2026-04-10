@@ -75,6 +75,12 @@ class Collection:
             raise ValueError("find_one() requires a non-empty filter")
         return self._table.get(_build_query(query))
     
+    def get_only(self):
+        docs = self._table.all()
+        if len(docs) != 1:
+            raise ValueError(f"Expected exactly 1 document, found {len(docs)}")
+        return docs[0]
+    
     def insert_one(self, document):
         if not isinstance(document, dict):
             raise TypeError("insert_one() requires a dict document")
