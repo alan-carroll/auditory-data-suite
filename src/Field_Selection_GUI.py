@@ -44,11 +44,7 @@ from matplotlib.collections import LineCollection
 import warnings
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
 from db_adapter import JSONStore
-
-# dB-above-threshold levels at which bandwidths are measured. The y-offset
-# on the TC plot for each is level // intensity_step (currently 5 dB steps,
-# so BW10 sits 2 rows above threshold, BW20 sits 4 rows above, etc.).
-BW_LEVELS = (10, 20, 30, 40)
+from site_model import SiteModel, StimConfig
 
 # Ignore warnings about opening too many figures or not finding contour lines 
 # issued by matplotlib
@@ -234,7 +230,7 @@ class SiteScreen(Screen):
         densetc_plot.max_bubble_size = 30
         densetc_plot.bubble_plot(axis_visible="on")
         self.densetc_plot = densetc_plot
-        if self.densetc_plot.marked:
+        if self.densetc_plot.model.working.marked:
             self.mark_site_toggle.state = "down"
         self.layout.add_widget(self.densetc_plot)
 
@@ -270,14 +266,11 @@ class SiteScreen(Screen):
 
     def on_mark_toggle(self, _event):
         """Event monitoring if site is 'marked' or not."""
-        if self.mark_site_toggle.state == "down":
-            if not self.densetc_plot.saved_marked:
-                self.densetc_plot.on_changes_signal.send()
-            self.densetc_plot.marked = True
-        else:
-            if self.densetc_plot.saved_marked:
-                self.densetc_plot.on_changes_signal.send()
-            self.densetc_plot.marked = False
+        model = self.densetc_plot.model
+        new_marked = (self.mark_site_toggle.state == "down")
+        if new_marked != model.saved.marked:
+            self.densetc_plot.on_changes_signal.send()
+        model.working.marked = new_marked
 
     def on_reset(self, _event):
         """Event to reset any un-saved analysis changes made to a site."""
@@ -287,38 +280,17 @@ class SiteScreen(Screen):
         self.reset_button.disabled = True
         self.reset_button.background_color = [0.25, 0.05, 0.1, 1]
 
-        # Reset values to default
-        self.densetc_plot.cf_idx = self.densetc_plot.saved_cf_idx
-        self.densetc_plot.thresh_idx = self.densetc_plot.saved_thresh_idx
-        self.densetc_plot.bw_idx = {
-            lvl: v.copy() for lvl, v in self.densetc_plot.saved_bw_idx.items()}
-        self.densetc_plot.continuous_bw_idx = \
-            self.densetc_plot.saved_continuous_bw_idx.copy()
-        self.densetc_plot.onset = self.densetc_plot.saved_onset
-        self.densetc_plot.peak = self.densetc_plot.saved_peak
-        self.densetc_plot.offset = self.densetc_plot.saved_offset
-        self.densetc_plot.peak_driven_rate = \
-            self.densetc_plot.saved_peak_driven_rate
-
-        self.densetc_plot.contour_tc = \
-            self.densetc_plot.saved_contour_tc.copy()
-
+        self.densetc_plot.model.reset()
         self.redraw()
 
         # Reset Marked toggle, if necessary
-        if self.densetc_plot.saved_marked:
-            self.mark_site_toggle.state = "down"
-        else:
-            self.mark_site_toggle.state = "normal"
+        self.mark_site_toggle.state = (
+            "down" if self.densetc_plot.model.saved.marked else "normal")
 
     def change_bin_size(self, _spinner, value):
         """Show PSTH with 1 or 5 ms bin size."""
-        if value == "5 ms":
-            self.densetc_plot.bin_size = 5
-            self.densetc_plot.psth_plot()
-        else:
-            self.densetc_plot.bin_size = 1
-            self.densetc_plot.psth_plot()
+        self.densetc_plot.bin_size = 5 if value == "5 ms" else 1
+        self.densetc_plot.psth_plot()
         self.redraw()
 
     def pick_cf(self, _event):
@@ -336,153 +308,104 @@ class SiteScreen(Screen):
         self.redraw()
 
     def save_changes(self, *_args, **_kwargs):
-        """Update .json storage with new user analysis."""
-        today = str(datetime.datetime.now())
+        """
+        Persist working state to the DB and commit it as the new
+        reset baseline.
+        """
+        model = self.densetc_plot.model
+        st = model.working
+        cfg = model.config
+        freqs = np.asarray(cfg.frequencies_hz)
+        ints = np.asarray(cfg.intensities_db)
+
         self.unsaved_changes = False
         self.save_changes_button.disabled = True
         self.save_changes_button.background_color = [0.2, 0.65, 0, 1]
         self.reset_button.disabled = True
         self.reset_button.background_color = [0.25, 0.05, 0.1, 1]
-        frequencies = self.gui_instance.frequency
-        intensities = self.gui_instance.intensity
 
-        # Copy just in case, to prevent any dangling references
-        continuous_bw = self.densetc_plot.continuous_bw_idx.copy()
-        cf = self.densetc_plot.cf_idx
-        thresh = self.densetc_plot.thresh_idx
-        onset = self.densetc_plot.onset
-        peak = self.densetc_plot.peak
-        offset = self.densetc_plot.offset
-        peak_driven_rate = self.densetc_plot.peak_driven_rate
-        marked = self.densetc_plot.marked
+        if st.continuous_bw_idx[0] is None:
+            # Manual edits were made without re-running auto-analyze,
+            # so continuous BW was never refreshed.
+            result = afunc.ttest_analyze_tuning_curve(model.ttest_tc())
+            st.continuous_bw_idx = result[-2]
 
-        # Update 'saved' values to current values.
-        self.densetc_plot.saved_cf_idx = cf
-        self.densetc_plot.saved_thresh_idx = thresh
-        bw = {lvl: v.copy() for lvl, v in self.densetc_plot.bw_idx.items()}
-        self.densetc_plot.saved_bw_idx = {lvl: v.copy() for lvl, v in bw.items()}
-        self.densetc_plot.saved_continuous_bw_idx = continuous_bw
-        self.densetc_plot.saved_onset = onset
-        self.densetc_plot.saved_peak = peak
-        self.densetc_plot.saved_offset = offset
-        self.densetc_plot.saved_peak_driven_rate = peak_driven_rate
-        self.densetc_plot.saved_marked = marked
-
-        # Finish analysis
+        # Convert indices to physical units
         bw_khz, bw_oct = {}, {}
-        for lvl in BW_LEVELS:
-            if bw[lvl][0] is not None:
-                bw_khz[lvl] = (frequencies[bw[lvl]] / 1000).tolist()
-                bw_oct[lvl] = afunc.get_bandwidth(*frequencies[bw[lvl]]).tolist()
+        for lvl in cfg.bw_levels_db:
+            lo, hi = st.bw_idx[lvl]
+            if lo is not None:
+                bw_khz[lvl] = (freqs[[lo, hi]] / 1000).tolist()
+                bw_oct[lvl] = afunc.get_bandwidth(
+                    freqs[lo], freqs[hi]).tolist()
             else:
                 bw_khz[lvl] = [None, None]
                 bw_oct[lvl] = None
 
-        if continuous_bw[0] is None:  
-            # Site is being saved with new data, but cont. BW's haven't updated
-            ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-                self.densetc_plot.tuning_curve_df,
-                driven_onset_ms=onset, 
-                driven_offset_ms=offset,
-                spont_onset_ms=400 - (offset - onset),
-                spont_offset_ms=400)
-            _, _, cf, thresh, *bws, continuous_bw, _ = \
-                afunc.ttest_analyze_tuning_curve(
-                     afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts))
-            bw = dict(zip(BW_LEVELS, bws))
-        try:  
-            # Cont. BW should work now, but rare cases may still create an 
-            # exception (eg. no regions found in auto-tc)
-            continuous_bw_khz = [(frequencies[bw] / 1000).tolist() for 
-                                 bw in continuous_bw]
-            continuous_bw_octave = [
-                afunc.get_bandwidth(*frequencies[bw]).tolist() for 
-                bw in continuous_bw]
-        except TypeError:  
-            # Cont. BW is likely [None, None] for some reason or other. 
-            # In this case, leave it that way
-            continuous_bw = [None, None]
-            continuous_bw_khz = [None, None]
-            continuous_bw_octave = None
-
-        cf_khz = frequencies[cf] / 1000
-        thresh_db = intensities[thresh].tolist()
-
-        analysis_id = self.gui_instance.analysis_id
-        site_number = self.map_number
+        try:
+            cont_bw_khz = [(freqs[b] / 1000).tolist()
+                           for b in st.continuous_bw_idx]
+            cont_bw_oct = [afunc.get_bandwidth(*freqs[b]).tolist()
+                           for b in st.continuous_bw_idx]
+        except TypeError:
+            # Auto-analysis found no regions; persist as absent.
+            st.continuous_bw_idx = [None, None]
+            cont_bw_khz = [None, None]
+            cont_bw_oct = None
+        
+        # Guard cf/thresh against None
+        cf_khz = (None if st.cf_idx is None 
+                  else freqs[st.cf_idx] / 1000)
+        threshold_db = (None if st.thresh_idx is None 
+                        else ints[st.thresh_idx].tolist())
         update_doc = {
             "cf_khz": cf_khz,
-            "threshold_db": thresh_db,
-            "cf_idx": cf,
-            "threshold_idx": thresh,
-            "continuous_bw_khz": continuous_bw_khz,
-            "continuous_bw_idx": continuous_bw,
-            "continuous_bw_octave": continuous_bw_octave,
-            "onset_ms": onset,
-            "peak_ms": peak,
-            "offset_ms": offset,
-            "peak_driven_rate_hz": peak_driven_rate,
-            "marked": marked,
+            "threshold_db": threshold_db,
+            "cf_idx": st.cf_idx,
+            "threshold_idx": st.thresh_idx,
+            "continuous_bw_khz": cont_bw_khz,
+            "continuous_bw_idx": st.continuous_bw_idx,
+            "continuous_bw_octave": cont_bw_oct,
+            "onset_ms": st.onset,
+            "peak_ms": st.peak,
+            "offset_ms": st.offset,
+            "peak_driven_rate_hz": st.peak_driven_rate,
+            "marked": st.marked,
         }
-        for lvl in BW_LEVELS:
-            update_doc[f"bw{lvl}_idx"] = bw[lvl]
+        for lvl in cfg.bw_levels_db:
+            update_doc[f"bw{lvl}_idx"] = st.bw_idx[lvl]
             update_doc[f"bw{lvl}_khz"] = bw_khz[lvl]
             update_doc[f"bw{lvl}_octave"] = bw_oct[lvl]
 
         self.gui_instance.densetc_analysis_collection.update_one(
-            {"analysis_id": analysis_id, "number": site_number},
-            {"$set": update_doc})
+            {"analysis_id": self.gui_instance.analysis_id,
+             "number": self.map_number},
+            {"$set": update_doc}
+        )
 
         self.gui_instance.analysis_metadata_collection.update_one(
-            {"_id": analysis_id},
-            {"$set": {
-                "last_modified": today
-            }})
+            {"_id": self.gui_instance.analysis_id},
+            {"$set": {"last_modified": str(datetime.datetime.now())}}
+        )
 
-        # Update plots with correct colors / values
-        self.densetc_plot.bubble_color = self.densetc_plot.cf_cmap(
-            self.densetc_plot.norm(self.densetc_plot.cf_idx))
-        self.densetc_plot.lat_color = self.densetc_plot.speed_cmap(
-            self.densetc_plot.speed_norm(self.densetc_plot.onset))
+        model.commit()
         self.redraw()
 
-        self.gui_instance.plot_dict[self.map_number].cf_idx = cf
-        self.gui_instance.plot_dict[self.map_number].thresh_idx = thresh
-        self.gui_instance.plot_dict[self.map_number].onset = onset
-        self.gui_instance.plot_dict[self.map_number].peak = peak
-        self.gui_instance.plot_dict[self.map_number].offset = offset
-        self.gui_instance.plot_dict[self.map_number].bw_idx = \
-            {lvl: v.copy() for lvl, v in bw.items()}
-        self.gui_instance.plot_dict[self.map_number].bubble_color = \
-            self.densetc_plot.bubble_color
-        self.gui_instance.plot_dict[self.map_number].lat_color = \
-            self.densetc_plot.lat_color
-        self.gui_instance.plot_dict[self.map_number].re_plot()
-
     def auto_tc_analyze(self, *_args, **_kwargs):
-        """Run TC auto-analysis; use after manually updating PSTH latencies."""
-        onset = self.densetc_plot.onset
-        offset = self.densetc_plot.offset
+        """
+        Re-run the TC auto-analysis at the current latency window and
+        load results into working state. Nothing persists until Save.
+        """
+        model = self.densetc_plot.model
+        st = model.working
+        cfg = model.config
         self.densetc_plot.on_changes_signal.send()
-        ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-            self.densetc_plot.tuning_curve_df,
-            driven_onset_ms=onset, 
-            driven_offset_ms=offset,
-            spont_onset_ms=400 - (offset - onset),
-            spont_offset_ms=400)
-        smooth_tc, _, cf, thresh, *bws, continuous_bw, _ = \
-            afunc.ttest_analyze_tuning_curve(
-                afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts))
-
-        # Store analyzed data in the SitePlot object. 
-        # Data is NOT saved until user hits 'Save' button
-        self.densetc_plot.cf_idx = cf
-        self.densetc_plot.thresh_idx = thresh
-        self.densetc_plot.bw_idx = dict(zip(BW_LEVELS, bws))
-        self.densetc_plot.continuous_bw_idx = continuous_bw
-        smooth_tc[0 < smooth_tc] = 1
-        self.densetc_plot.contour_tc = smooth_tc
-
+        _, _, cf, thresh, *bws, continuous_bw, _ = \
+            afunc.ttest_analyze_tuning_curve(model.ttest_tc())
+        st.cf_idx = cf
+        st.thresh_idx = thresh
+        st.bw_idx = dict(zip(cfg.bw_levels_db, bws))
+        st.continuous_bw_idx = continuous_bw
         self.redraw()
 
     def changes_made(self, *_args, **_kwargs):
@@ -502,30 +425,20 @@ class SiteScreen(Screen):
     def change_screen(self, _event):
         """
         Close Site-specific screen and return to Map GUI overview.
-        Updates latency lines and plots with any user analysis changes, and 
-        marks whether a site is 'Marked' or has unsaved user changes.
-        Triggers event to briefly flash Site in Map GUI to help user navigate
-        where they were just inspecting.
+        Updates persist between views.
         """
-        xdata_onset = self.densetc_plot.onset_line.get_xdata()
-        xdata_offset = self.densetc_plot.offset_line.get_xdata()
-        self.gui_instance.plot_dict[
-            self.map_number].onset_line.set_xdata(xdata_onset)
-        self.gui_instance.plot_dict[
-            self.map_number].offset_line.set_xdata(xdata_offset)
-        self.gui_instance.plot_dict[
-            self.map_number].onset = self.densetc_plot.onset
-        self.gui_instance.plot_dict[
-            self.map_number].offset = self.densetc_plot.offset
-        self.gui_instance.plot_dict[self.map_number].update_bubble()
+        overview = self.gui_instance.plot_dict[self.map_number]
+        overview.re_plot()
         try:
-            self.gui_instance.plot_dict[self.map_number].figure_canvas.draw()
-        except ValueError: # Raised by non-responsive sites -- just ignore. 
+            overview.figure_canvas.draw()
+        except ValueError:
+            # Non-responsive sites occasionally raise on draw; harmless.
             pass
-        
-        self.flash_signal.send(self.map_number, 
-                               unsaved_changes=self.unsaved_changes, 
-                               marked=self.densetc_plot.marked)
+
+        self.flash_signal.send(
+            self.map_number,
+            unsaved_changes=self.unsaved_changes,
+            marked=self.densetc_plot.model.working.marked)
         self.densetc_plot.active = False
         self.densetc_plot.fig.clf()
         self.manager.switch_to(self.gui_instance.parent)
@@ -533,7 +446,6 @@ class SiteScreen(Screen):
     def on_pre_enter(self, *args):
         """Ready Site plots prior to switching GUI screens."""
         self.densetc_plot.active = True
-        # Clear first plot generated during SitePlot.__init__()
         self.densetc_plot.fig.clf()
         self.densetc_plot.ax[0] = self.densetc_plot.fig.add_subplot(2, 1, 1)
         self.densetc_plot.ax[1] = self.densetc_plot.fig.add_subplot(2, 1, 2)
