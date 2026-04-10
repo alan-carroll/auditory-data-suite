@@ -502,6 +502,8 @@ class FieldSelectionGUI(BoxLayout):
 
         self.counter = 0
         self.site_screens = {}
+        self.site_models = {}
+        self.stim_config = None
 
         self.vor_df = None
         self.dense_df = None
@@ -782,6 +784,13 @@ class FieldSelectionGUI(BoxLayout):
                 a["number"]: a
                 for a in self.densetc_analysis_collection.find(
                     {"analysis_id": self.analysis_id})}
+            
+            # One StimConfig shared by every SiteModel. Sweep length is
+            # sniffed from a PSTH if the project config doesn't carry it.
+            any_analysis = next(iter(self.densetc_analysis.values()))
+            self.stim_config = StimConfig.from_project_config(
+                self.project_configuration,
+                fallback_sweep_ms=len(any_analysis["psth"]))
 
             self.display_map()
             print("\n *** Ready! *** \n")
@@ -808,9 +817,23 @@ class FieldSelectionGUI(BoxLayout):
     def open_site_screen(self, site_number):
         """
         Switch from the Map overview to the detailed analysis view for a site.
-
+        Built on the fly when first accessed.
         `self.parent` is the MapScreen that owns this layout.
         """
+        if site_number not in self.site_screens:
+            detail_plot = SitePlot(
+                model=self.site_models[site_number],
+                detailed_plot=True,
+                is_ic=self.ic_bool,
+                cf_cmap=self.cf_colormap_dropdown.text,
+                heatmap_cmap=self.heatmap_colormap_dropdown.text,
+                size_hint=(1, 1),
+                pos_hint={"center_x": 0.5, "center_y": 0.5},
+                height=1,
+                width=2)
+            self.site_screens[site_number] = SiteScreen(
+                self, site_number, detail_plot,
+                name=f"Site {site_number}")
         self.parent.manager.switch_to(self.site_screens[site_number])
 
     def on_cf_colormap(self, _spinner, value):
@@ -1124,31 +1147,25 @@ class FieldSelectionGUI(BoxLayout):
             y = (site["voronoi_centroid"][1] * 
                  (reduced_scale[1] - reduced_scale[0]) / 
                  (1 - 0) + reduced_scale[0])
+            
+            model = SiteModel(site_number,
+                              self.densetc_data[site_number],
+                              site_analysis,
+                              self.stim_config)
+            self.site_models[site_number] = model
             site_plot = SitePlot(
+                model=model,
+                detailed_plot=False,
+                is_ic=self.ic_bool,
+                cf_cmap=self.cf_colormap_dropdown.text,
+                heatmap_cmap=self.heatmap_colormap_dropdown.text,
                 size_hint=(None, None), 
                 pos_hint={"center_x": x, "center_y": y},
                 height=150, 
-                width=200, 
-                site_number=site_number,
-                gui_instance=self,
-                detailed_plot=False, 
-                cf_cmap=self.cf_colormap_dropdown.text,
-                heatmap_cmap=self.heatmap_colormap_dropdown.text)
-            detail_plot = SitePlot(
-                size_hint=(1, 1), 
-                pos_hint={"center_x": 0.5, "center_y": 0.5},
-                height=1, 
-                width=2,
-                site_number=site_number, 
-                gui_instance=self,
-                detailed_plot=True, 
-                cf_cmap=self.cf_colormap_dropdown.text,
-                heatmap_cmap=self.heatmap_colormap_dropdown.text)
+                width=200)
 
             self.plot_dict[site_number] = site_plot
             self.map_canvas.add_widget(site_plot)
-            self.site_screens[site_number] = SiteScreen(
-                self, site_number, detail_plot, name=f"Site {site_number}")
             with self.map_canvas.canvas.before:
                 # Check if site should start painted some color
                 if site_analysis["field_assignment"] and not self.marks_active:
