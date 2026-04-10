@@ -24,6 +24,7 @@ from tinydb import TinyDB, Query
 from uuid import uuid4
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,11 @@ class JSONStore:
     def __init__(self, path):
         # Unlike TinyMongoClient, which took a directory and derived the
         # filename from the "database" name, we just take the full path.
+        # Adds `.json` extension if it's missing, since this is just a
+        # simple adapter layer for old tinymongo json files
+        path = Path(path)
+        if not path.suffix:
+            path = path.with_suffix(".json")
         self._db = TinyDB(str(path))
 
     def collection(self, name):
