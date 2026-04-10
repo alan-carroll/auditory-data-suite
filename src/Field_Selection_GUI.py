@@ -144,7 +144,7 @@ class SiteScreen(Screen):
 
         contour_layout = BoxLayout(orientation="vertical", size_hint=(0.1, 1))
         self.contour_checkbox = CheckBox(active=False, size_hint=(1, 0.5))
-        self.contour_checkbox.bind(active=self.on_contour_checkbox)
+        self.contour_checkbox.bind(active=self._on_plot_flag_checkbox)
         self.contour_checkbox_label = Label(text="TC Contour: ", 
                                             color=[0, 0, 0, 1], 
                                             size_hint=(1, 0.5))
@@ -154,7 +154,7 @@ class SiteScreen(Screen):
         smooth_tc_layout = BoxLayout(orientation="vertical", 
                                      size_hint=(0.1, 1))
         self.smooth_tc_checkbox = CheckBox(active=False, size_hint=(1, 0.5))
-        self.smooth_tc_checkbox.bind(active=self.on_smooth_tc_checkbox)
+        self.smooth_tc_checkbox.bind(active=self._on_plot_flag_checkbox)
         self.smooth_tc_checkbox_label = Label(text="Smooth TC: ", 
                                               color=[0, 0, 0, 1], 
                                               size_hint=(1, 0.5))
@@ -163,7 +163,7 @@ class SiteScreen(Screen):
 
         lineplot_layout = BoxLayout(orientation="vertical", size_hint=(0.1, 1))
         self.lineplot_checkbox = CheckBox(active=False, size_hint=(1, 0.5))
-        self.lineplot_checkbox.bind(active=self.on_lineplot_checkbox)
+        self.lineplot_checkbox.bind(active=self._on_plot_flag_checkbox)
         self.lineplot_checkbox_label = Label(text="TC Line Plot: ", 
                                              color=[0, 0, 0, 1], 
                                              size_hint=(1, 0.5))
@@ -172,7 +172,7 @@ class SiteScreen(Screen):
 
         heatmap_layout = BoxLayout(orientation="vertical", size_hint=(0.1, 1))
         self.heatmap_checkbox = CheckBox(active=False, size_hint=(1, 0.5))
-        self.heatmap_checkbox.bind(active=self.on_heatmap_checkbox)
+        self.heatmap_checkbox.bind(active=self._on_plot_flag_checkbox)
         self.heatmap_checkbox_label = Label(text="TC Heatmap: ", 
                                             color=[0, 0, 0, 1], 
                                             size_hint=(1, 0.5))
@@ -181,11 +181,21 @@ class SiteScreen(Screen):
 
         bw_layout = BoxLayout(orientation="vertical", size_hint=(0.1, 1))
         self.bw_checkbox = CheckBox(active=True, size_hint=(1, 0.5))
-        self.bw_checkbox.bind(active=self.on_bw_checkbox)
+        self.bw_checkbox.bind(active=self._on_plot_flag_checkbox)
         self.bw_checkbox_label = Label(text="Show BWs: ", color=[0, 0, 0, 1], 
                                        size_hint=(1, 0.5))
         bw_layout.add_widget(self.bw_checkbox_label)
         bw_layout.add_widget(self.bw_checkbox)
+
+        # checkbox -> SitePlot flag it controls. Populated here (after
+        # all five checkboxes exist) rather than at each bind site.
+        self._plot_flag_checkboxes = {
+            self.contour_checkbox:   "use_contour",
+            self.smooth_tc_checkbox: "use_smooth_tc",
+            self.lineplot_checkbox:  "use_lineplot",
+            self.heatmap_checkbox:   "use_heatmap",
+            self.bw_checkbox:        "use_bw",
+        }
 
         bin_size_layout = BoxLayout(orientation="horizontal", 
                                     size_hint=(0.1, 1))
@@ -240,6 +250,24 @@ class SiteScreen(Screen):
         self.densetc_plot.re_plot(axis_visible="on")
         self.densetc_plot.figure_canvas.draw()
 
+    def _on_plot_flag_checkbox(self, checkbox, checked):
+        """
+        Shared handler for the five TC-display checkboxes. Each flips
+        one boolean on the detail SitePlot and redraws; which boolean
+        is looked up from the checkbox instance.
+
+        TODO Fix mutually exclusive drawing flags
+        """
+        attr = self._plot_flag_checkboxes[checkbox]
+        setattr(self.densetc_plot, attr, checked)
+        if attr in ("use_lineplot", "use_heatmap"):
+            self.bubble_slider.disabled = checked
+            if checked:
+                other = ("use_heatmap" if attr == "use_lineplot"
+                         else "use_lineplot")
+                setattr(self.densetc_plot, other, False)
+        self.redraw()
+
     def on_mark_toggle(self, _event):
         """Event monitoring if site is 'marked' or not."""
         if self.mark_site_toggle.state == "down":
@@ -282,52 +310,6 @@ class SiteScreen(Screen):
             self.mark_site_toggle.state = "down"
         else:
             self.mark_site_toggle.state = "normal"
-
-    def on_contour_checkbox(self, _checkbox, checked):
-        """Display smoothed contour lines around TC."""
-        if checked:
-            self.densetc_plot.use_contour = True
-        else:
-            self.densetc_plot.use_contour = False
-        self.redraw()
-
-    def on_smooth_tc_checkbox(self, _checkbox, checked):
-        """Display smoothed TC instead of raw spike counts."""
-        if checked:
-            self.densetc_plot.use_smooth_tc = True
-        else:
-            self.densetc_plot.use_smooth_tc = False
-        self.redraw()
-
-    def on_lineplot_checkbox(self, _checkbox, checked):
-        """Display spike counts as lines. Longer -> more spikes."""
-        if checked:
-            self.densetc_plot.use_lineplot = True
-            self.bubble_slider.disabled = True
-            self.densetc_plot.use_heatmap = False
-        else:
-            self.densetc_plot.use_lineplot = False
-            self.bubble_slider.disabled = False
-        self.redraw()
-
-    def on_heatmap_checkbox(self, _checkbox, checked):
-        """Display spike counts as a heatmap."""
-        if checked:
-            self.densetc_plot.use_heatmap = True
-            self.bubble_slider.disabled = True
-            self.densetc_plot.use_lineplot = False
-        else:
-            self.densetc_plot.use_heatmap = False
-            self.bubble_slider.disabled = False
-        self.redraw()
-
-    def on_bw_checkbox(self, _checkbox, checked):
-        """Display 10-40 dB Bandwidths on top of TC."""
-        if checked:
-            self.densetc_plot.use_bw = True
-        else:
-            self.densetc_plot.use_bw = False
-        self.redraw()
 
     def change_bin_size(self, _spinner, value):
         """Show PSTH with 1 or 5 ms bin size."""
@@ -747,11 +729,17 @@ class FieldSelectionGUI(BoxLayout):
                                           size_hint=(1, 0.058))
         self.toggle_heatmap = ToggleButton(text="Heatmap TC", 
                                            size_hint=(1, 0.058))
-        self.toggle_contour.bind(on_release=self.on_toggle_contour)
-        self.toggle_lineplot.bind(on_release=self.on_toggle_lineplot)
-        self.toggle_bw.bind(on_release=self.on_toggle_bw)
-        self.toggle_smooth.bind(on_release=self.on_toggle_smooth)
-        self.toggle_heatmap.bind(on_release=self.on_toggle_heatmap)
+        # Each map-wide display toggle just flips one boolean on every
+        # overview SitePlot and redraws.
+        self._plot_flag_toggles = {
+            self.toggle_contour:  "use_contour",
+            self.toggle_lineplot: "use_lineplot",
+            self.toggle_bw:       "use_bw",
+            self.toggle_smooth:   "use_smooth_tc",
+            self.toggle_heatmap:  "use_heatmap",
+        }
+        for tgl in self._plot_flag_toggles:
+            tgl.bind(on_release=self._on_plot_flag_toggle)
 
         self.toggle_show_fields = ToggleButton(text="Show Fields", 
                                                group="fields_or_marks", 
@@ -944,19 +932,6 @@ class FieldSelectionGUI(BoxLayout):
             site.densetc_plot.re_color(cf_cmap=self.cf_colormap_dropdown.text,
                                        heatmap_cmap=value)
 
-    def on_toggle_heatmap(self, _event):
-        """Show spike heatmaps instead of default bubble plots."""
-        if self.toggle_heatmap.state == "down":
-            for plot in self.plot_dict.values():
-                plot.use_heatmap = True
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.use_heatmap = False
-                plot.re_plot()
-                plot.figure_canvas.draw()
-
     def check_mark_or_field(self, _spinner, value):
         """
         Quick function to check what user intends and help them out instead of 
@@ -1089,68 +1064,23 @@ class FieldSelectionGUI(BoxLayout):
                             self.vor_lines[site_number].color.a = 0
                             self.vor_active[site_number] = False
 
+    def _redraw_all_plots(self, **re_plot_kwargs):
+        """Re-render every overview SitePlot with the same kwargs."""
+        for plot in self.plot_dict.values():
+            plot.re_plot(**re_plot_kwargs)
+            plot.figure_canvas.draw()
+
+    def _on_plot_flag_toggle(self, toggle):
+        """Shared handler for the map-wide TC display toggles."""
+        attr = self._plot_flag_toggles[toggle]
+        value = (toggle.state == "down")
+        for plot in self.plot_dict.values():
+            setattr(plot, attr, value)
+        self._redraw_all_plots()
+
     def on_psth_ylim(self, _spinner, text):
         """Changing PSTH ylim's. Useful to emphasize weakly responsive sites."""
-        if text == "None":
-            for plot in self.plot_dict.values():
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.re_plot(min_y=int(text))
-                plot.figure_canvas.draw()
-
-    def on_toggle_contour(self, _event):
-        """Display smoothed contour lines around TCs."""
-        if self.toggle_contour.state == "down":
-            for plot in self.plot_dict.values():
-                plot.use_contour = True
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.use_contour = False
-                plot.re_plot()
-                plot.figure_canvas.draw()
-
-    def on_toggle_lineplot(self, _event):
-        """Display spike counts as lines. Longer -> more spikes."""
-        if self.toggle_lineplot.state == "down":
-            for plot in self.plot_dict.values():
-                plot.use_lineplot = True
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.use_lineplot = False
-                plot.re_plot()
-                plot.figure_canvas.draw()
-
-    def on_toggle_bw(self, _event):
-        """Display 10-40 dB Bandwidths on top of TC."""
-        if self.toggle_bw.state == "down":
-            for plot in self.plot_dict.values():
-                plot.use_bw = True
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.use_bw = False
-                plot.re_plot()
-                plot.figure_canvas.draw()
-
-    def on_toggle_smooth(self, _event):
-        """Display smoothed TC instead of raw spike counts."""
-        if self.toggle_smooth.state == "down":
-            for plot in self.plot_dict.values():
-                plot.use_smooth_tc = True
-                plot.re_plot()
-                plot.figure_canvas.draw()
-        else:
-            for plot in self.plot_dict.values():
-                plot.use_smooth_tc = False
-                plot.re_plot()
-                plot.figure_canvas.draw()
+        self._redraw_all_plots(min_y=None if text == "None" else int(text))
 
     def export_map(self, _event):
         """Save Auditory Field selections and Marked sites to .json file."""
