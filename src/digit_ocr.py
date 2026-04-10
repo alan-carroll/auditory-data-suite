@@ -238,7 +238,7 @@ class DigitOCR:
         Visual proof sheet.
 
         Args:
-            results: OCRResult's returned from recognize_batch
+            results: OCRResult's returned from recognize
             cols: grid columns (default 10 for easy row tracking)
             save_proof_sheet: if given, saves proof sheet PNG instead of display
         """
@@ -315,8 +315,6 @@ class DigitOCR:
             plt.close(fig)
         else:
             plt.show(block=True)
-
-        return results
 
     # ────────────────────────────────────────────────────────────
     #  Internals
