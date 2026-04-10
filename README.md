@@ -59,13 +59,6 @@ At Anaconda prompt:
 
 Hopefully that works for you without error. I can't predict the future though. Good luck, cadet.
 
-#### tinymongo_fix
-Not an install, just a tweak to the [tinymongo](https://github.com/schapman1974/tinymongo) package after an update broke the thing. It's no longer a maintained package, but this program uses it, so.
-
-Just leave the `tinymongo_fix` folder in the `src` dir, and if you ever feel like writing/changing code that uses it, do:
-
-`from tinymongo_fix.tinymongo_fix import TinyMongoClient`
-
 ### Special note about Kivy
 Kivy is a GUI framework for python. GUIs in python are hard. GUIs are hard in general, but in python they are very hard. This map program is an especially weird GUI. Most people making GUIs don't want/need to do what I did. Kivy was the only python GUI framework I found at the time of creation that allowed me to make a bunch of plots for mapping sites in a way that was functional.
 
