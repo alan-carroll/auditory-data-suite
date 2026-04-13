@@ -202,8 +202,8 @@ class DigitOCR:
     #  Recognition
     # ────────────────────────────────────────────────────────────
 
-    def recognize(self, gray_image, metadata={}):
-        res = OCRResult(crop=gray_image, metadata=metadata)
+    def recognize(self, gray_image, metadata=None):
+        res = OCRResult(crop=gray_image, metadata=dict(metadata or {}))
         blobs = self._extract_blobs(gray_image)
         if not blobs:
             return res
