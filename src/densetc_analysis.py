@@ -103,7 +103,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                                       "program_run_date": today}).inserted_id
     # Automatic-analysis metadata
     # Prevent anyone manually changing this by including a 'frozen' entry
-    if final_file:
+    if final_file is not None:
         analysis_comment = "Tuning curve analysis generated from a final file"
     else:
         analysis_comment = "Auto tuning curve analysis and data pre-processing"
@@ -225,8 +225,9 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         map_height = int(map_height + (map_height * 0.1))
         
     # Update database with map width/height data.
-    db_metadata.update_one({"_id": meta_id}, {"map_height": map_height, 
-                                              "map_width": map_width,})
+    db_metadata.update_one({"_id": meta_id},
+                           {"$set": {"map_height": map_height,
++                                     "map_width": map_width}})
 
     # Add breathing room to point coordinates so map is easier to display
     # min=0, max=max+(max*0.1), then scale the data in range of 0.1-0.9
@@ -404,7 +405,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
 
 
 def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints, 
-                    ic_pens=[], final_file=None, return_sdf=True):
+                    ic_pens=(), final_file=None, return_sdf=True):
     """
     Parse DenseTC files and attempt auto-analysis of TCs and latencies.
     Returns dict containing:
@@ -451,7 +452,7 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         }
     if return_sdf:
         latency_dict = get_densetc_bb_lats(psth, n_sweeps, spont)
-    elif final_file:
+    elif final_file is not None:
         map_number = bw_dict["map_number"]
         row = final_file[final_file["number"] == map_number]
         onset = int(row["onset"].values)
@@ -480,7 +481,7 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         continuous_bw_octave = None
         bw10_khz = bw20_khz = bw30_khz = bw40_khz = [None, None]
         continuous_bw_khz = [None, None]
-    elif final_file:
+    elif final_file is not None:
         # Don't measure continuous for analysis pulled from final file
         continuous_bw = [None, None]
         continuous_bw_khz = [None, None]
@@ -654,7 +655,7 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
     return return_dict
 
 
-def speech_bw_loop(idx, file, total, use_f32, ic_pens=[]):
+def speech_bw_loop(idx, file, total, use_f32, ic_pens=()):
     """
     Currently this just parses files and stores data for offline analysis.
     Potential to add analysis like DenseTC section in the future.
@@ -677,7 +678,7 @@ def speech_bw_loop(idx, file, total, use_f32, ic_pens=[]):
     return bw_dict
 
 
-def burst_bw_loop(idx, file, total, use_f32, ic_pens=[]):
+def burst_bw_loop(idx, file, total, use_f32, ic_pens=()):
     """
     Currently this just parses files and stores data for offline analysis.
     Potential to add analysis like DenseTC section in the future.
@@ -700,7 +701,7 @@ def burst_bw_loop(idx, file, total, use_f32, ic_pens=[]):
     return bw_dict
     
 
-def read_bw_block(file, use_f32, get_spikes, ic_pens=[], prettify_func=None):
+def read_bw_block(file, use_f32, get_spikes, ic_pens=(), prettify_func=None):
     """
     Utility func to read Brainware blocks and parse map numbers.
     Returns dict with metadata and a dataset-specific spiketimes data block.
