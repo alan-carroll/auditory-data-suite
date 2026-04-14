@@ -28,6 +28,7 @@ from scipy.stats import ttest_ind
 import colorama
 from colorama import Fore, Style
 from db_adapter import JSONStore
+import cli_utils as cli
 
 
 def get_folder(**kwargs):
@@ -79,9 +80,7 @@ def create_config_file():
     Current implementation is stupid-simple and just asks a list of questions
     about known possible sets/data.
     """
-    print(colorama.Style.BRIGHT+colorama.Fore.YELLOW+
-          "Select a location and file name to save your config file to: "+
-          colorama.Style.RESET_ALL)
+    cli.info("Select a location and filename to save your config file to: ")
     save_location = save_file(title="Save configuration file", 
                               filetypes=[("JSON", ".json")])
     print(save_location+".json")
@@ -98,30 +97,27 @@ def create_config_file():
     # Tuning curve configuration options
     densetc_confirm = False
     while not densetc_confirm:
-        while (densetc_bool := input("Are you doing TC analysis [y/n]? > ")
-               .lower().strip()) not in ["y", "n"]:
-            continue
+        densetc_bool = cli.ask_yes_no("Are you doing TC analysis [y/n]? > ")
         if densetc_bool == "n":
             config_dict["do_densetc"] = 0
             densetc_confirm = True
             break
         
         print("What do your file names uniquely start with? \n"
-              "This will associate data files with TC analysis.\n"+
-              colorama.Fore.MAGENTA+
-              "eg. For 'DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src', "
-              "type 'DenseTC' (without quotes, case-sensitive)."+
-              colorama.Style.RESET_ALL)
+              "This will associate data files with TC analysis.")
+        cli.note(
+            "eg. For 'DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src', "
+            "type 'DenseTC' (without quotes, case-sensitive)."
+        )
         densetc_filename = input("> ")
 
-        print(colorama.Fore.YELLOW+
-              "\nSelect .csv file containing list of frequencies (Hz) and "
-              "intensities (dB SPL) used.\n"+
-              colorama.Fore.CYAN+
-              "MUST be Frequency column THEN Intensity column.\n"+
-              colorama.Fore.YELLOW+
-              "Each row corresponds to a tone (no headers, just values):"+
-              colorama.Style.RESET_ALL)
+        cli.info(
+            "\nSelect .csv file containing list of frequencies (Hz) and "
+            "intensities (dB SPL) used."
+        )
+        cli.warn("MUST be Frequency column THEN Intensity column.")
+        cli.info("Each row corresponds to a tone (no headers, just values):")
+
         try:
             densetc_df = pd.read_csv(
                 get_file(title="Open DenseTC .csv tone list", 
@@ -137,9 +133,7 @@ def create_config_file():
             print(f"There are {len(densetc_df)} total tones.")
             print(f"'{densetc_filename}' will be used to identify your files "
                   "for tuning curve analysis.")
-            while (yes_no := input("\nIs this correct [y/n]? > ")
-                   .lower().strip()) not in ["y", "n"]:
-                continue
+            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? >")
             if yes_no == "n":
                 continue
             densetc_confirm = True
@@ -151,40 +145,41 @@ def create_config_file():
                 densetc_df["intensity"].values).tolist()
             config_dict["densetc_num_tones"] = len(densetc_df)
 
-        except Exception as exp:
-            logging.exception(exp)
-            print(colorama.Fore.RED+
-                  "*** Selected file caused an error. Double check it is "
-                  "correct, or scream into void. ***\n"+
-                  colorama.Style.RESET_ALL)
+        except Exception as e:
+            cli.fail(
+                e,
+                "*** Selected file caused an error. Double check it is "
+                "correct, or scream into void. ***\n"
+            )
 
     # Speech configuration options
     speech_confirm = False
     while not speech_confirm:
-        while (speech_bool := input("Are you doing speech analysis [y/n]? > ")
-               .lower().strip()) not in ["y", "n"]:
-            continue
+        speech_bool = cli.ask_yes_no("Are you doing speech analysis [y/n]? > ")
         if speech_bool == "n":
             config_dict["do_speech"] = 0
             speech_confirm = True
             break
         
-        print("What do your file names uniquely start with? \n"
-              "This will associate data files with speech analysis.\n"+
-              colorama.Fore.MAGENTA+
-              "eg. For 'vnsspeech_60dB_RZ5_w5dBdummyPA5#001G_RZ5-1_007.src', "
-              "type 'vnsspeech' (without quotes, case-sensitive)."+
-              colorama.Style.RESET_ALL)
+        print(
+            "What do your file names uniquely start with? \n"
+            "This will associate data files with speech analysis.\n"
+        )
+        cli.note(
+            "eg. For 'vnsspeech_60dB_RZ5_w5dBdummyPA5#001G_RZ5-1_007.src', "
+            "type 'vnsspeech' (without quotes, case-sensitive)."
+        )
         speech_filename = input("> ")
-
-        print(colorama.Fore.YELLOW+
-              "\nSelect .csv file containing list of speech sounds "
-              "(name/description) and numbers (integers) used.\n"+
-              colorama.Fore.CYAN+
-              "MUST be Description column THEN Number column.\n"+
-              colorama.Fore.YELLOW+
-              "Each row corresponds to a sound (no headers, just values):"+
-              colorama.Style.RESET_ALL)
+        cli.info(
+            "\nSelect .csv file containing list of speech sounds "
+            "(name/description) and numbers (integers) used."
+        )
+        cli.warn(
+            "MUST be Description column THEN Number column."
+        )
+        cli.info(
+            "Each row corresponds to a sound (no headers, just values):"
+        )
         try:
             speech_df = pd.read_csv(
                 get_file(title="Open Speech .csv list",
@@ -195,9 +190,7 @@ def create_config_file():
             print(f"There are {len(speech_df)} total speech sounds.")
             print(f"'{speech_filename}' will be used to identify your files "
                   "for speech analysis.")
-            while (yes_no := input("\nIs this correct [y/n]? > ")
-                   .lower().strip()) not in ["y", "n"]:
-                continue
+            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
             if yes_no == "n":
                 continue
             speech_confirm = True
@@ -206,41 +199,42 @@ def create_config_file():
             config_dict["speech"] = [{"number": row.number, 
                                       "speech": row.speech} for row in 
                                      speech_df.itertuples()]
-
-        except Exception as exp:
-            logging.exception(exp)
-            print(colorama.Fore.RED+
-                  "*** Selected file caused an error. Double check it is "
-                  "correct, or scream into void. ***\n"+
-                  colorama.Style.RESET_ALL)
+        except Exception as e:
+            cli.fail(
+                e,
+                "*** Selected file caused an error. Double check it is "
+                "correct, or scream into void. ***\n"
+            )
 
     # Noiseburst configuration options
     burst_confirm = False
     while not burst_confirm:
-        while (burst_bool := input("Are you doing noiseburst analysis [y/n]?"
-                                   " > ").lower().strip()) not in ["y", "n"]:
-            continue
+        burst_bool = cli.ask_yes_no(
+            "Are you doing noiseburst analysis [y/n]? > "
+        )
         
         if burst_bool == "n":
             config_dict["do_burst"] = 0
             burst_confirm = True
             break
-        print("What do your file names uniquely start with? \n"
-              "This will associate data files with noiseburst analysis.\n"+
-              colorama.Fore.MAGENTA+
-              "eg. For 'bb_noise_train#001G1_7.src', "
-              "type 'bb_noise' (without quotes, case-sensitive)."+
-              colorama.Style.RESET_ALL)
+        print(
+            "What do your file names uniquely start with? \n"
+            "This will associate data files with noiseburst analysis.\n"
+        )
+        cli.note(
+            "eg. For 'bb_noise_train#001G1_7.src', "
+            "type 'bb_noise' (without quotes, case-sensitive)."
+        )
         burst_filename = input("> ")
 
-        print(colorama.Fore.YELLOW +
-              "\nSelect .csv file containing list of noise-burst ISIs (ms) "
-              "and number of bursts (integers) used.\n"+
-              colorama.Fore.CYAN+
-              "MUST be ISI column THEN Number column.\n"+
-              colorama.Fore.YELLOW+
-              "Each row corresponds to noise stim (no headers, just values):"+
-              colorama.Style.RESET_ALL)
+        cli.info(
+            "\nSelect .csv file containing list of noise-burst ISIs (ms) "
+            "and number of bursts (integers) used."
+        )
+        cli.warn("MUST be ISI column THEN Number column.")
+        cli.info(
+            "Each row corresponds to noise stim (no headers, just values):"
+        )
         try:
             burst_df = pd.read_csv(
                 get_file(title="Open noiseburst .csv parameters list",
@@ -251,9 +245,7 @@ def create_config_file():
             print(f"\nThere are {len(burst_df)} total noiseburst stimuli.")
             print(f"\n'{burst_filename}' will be used to identify your files "
                   "for noiseburst analysis.")
-            while (yes_no := input("\nIs this correct [y/n]? > ")
-                   .lower().strip()) not in ["y", "n"]:
-                continue
+            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
             if yes_no == "n":
                 continue
             burst_confirm = True
@@ -263,34 +255,32 @@ def create_config_file():
                                      "num_bursts": row.number} for row in 
                                     burst_df.itertuples()]
 
-        except Exception as exp:
-            logging.exception(exp)
-            print(colorama.Fore.RED+
-                  "*** Selected file caused an error. Double check it is "
-                  "correct, or scream into void. ***\n"+
-                  colorama.Style.RESET_ALL)
+        except Exception as e:
+            cli.fail(
+                e,
+                "*** Selected file caused an error. Double check it is "
+                "correct, or scream into void. ***\n"
+            )
 
     # IC mapping configuration
     ic_confirm = False
     while not ic_confirm:
-        while (ic_bool := input("Will ANY subjects in this project have IC "
-                                "maps [y/n]? > ").lower().strip()
-               ) not in ["y", "n"]:
-            continue
-        
+        ic_bool = cli.ask_yes_no(
+            "Will ANY subjects in this project have IC maps [y/n]? > "
+        )
         if ic_bool == "n":
             config_dict["do_IC"] = 0
             ic_confirm = True
             break
-        print(colorama.Back.MAGENTA+
-              "\nWhen analyzing subjects in this project, you will be "
-              "prompted to indicate which subjects have IC data."
-              "\nAny subject with IC data requires an additional .csv file "
-              "listing the mapping Penetration numbers associated with IC "
-              "files, and the Depths at those sites."
-              "\nFilenames for any stimulus presented in IC maps are assumed "
-              "to use the same naming pattern as files for Cortical maps.\n\n"+
-              colorama.Style.RESET_ALL)
+        cli.note(
+            "\nWhen analyzing subjects in this project, you will be "
+            "prompted to indicate which subjects have IC data."
+            "\nAny subject with IC data requires an additional .csv file "
+            "listing the mapping Penetration numbers associated with IC "
+            "files, and the Depths at those sites."
+            "\nFilenames for any stimulus presented in IC maps are assumed "
+            "to use the same naming pattern as files for Cortical maps.\n\n"
+        )
         config_dict["do_IC"] = 1
         ic_confirm = True
 
@@ -299,17 +289,14 @@ def create_config_file():
         with open(save_location+".json", "w") as file:
             json.dump(config_dict, file, indent=4)
 
-        print(colorama.Back.GREEN+
-              f"\nSaved config file {save_location+'.json'} !! :)"+
-              colorama.Style.RESET_ALL)
+        cli.banner(f"\nSaved config file {save_location+'.json'} !! :)")
         return config_dict
 
-    except Exception as exp:
-        logging.exception(exp)
-        print(colorama.Fore.RED+
-              "Something went horribly wrong during saving! Why? WHY?! :( :("+
-              colorama.Style.RESET_ALL)
-
+    except Exception as e:
+        cli.fail(
+            e,
+            "Something went horribly wrong during saving! Why? WHY?! :( :("
+        )
 
 def pick_voronoi(map_points_df, map_width, map_height):
     """
@@ -340,12 +327,12 @@ def pick_voronoi(map_points_df, map_width, map_height):
     bonus_pts = np.array([[x, y] for x, y in bonus.exterior.coords])
 
     # Use vispy-based voronoi program to pick additional border points
-    print(Style.BRIGHT+Fore.MAGENTA+
-          "Add additional border points to voronoi diagram as necessary."
-          "\nLeft-click adds a point."
-          "\nRight-click removes last added point."
-          "\n<Esc> or exit window to accept points and continue."+
-          Style.RESET_ALL)
+    cli.note(
+        "Add additional border points to voronoi diagram as necessary."
+        "\nLeft-click adds a point."
+        "\nRight-click removes last added point."
+        "\n<Esc> or exit window to accept points and continue."
+    )
     bonus_pts = voronoi_picker.pick_points(size=(round(map_width / 1.5), 
                                                  round(map_height / 1.5)),
                                            input_points=base_pts, 
@@ -1365,8 +1352,7 @@ def create_final_file(ic_bool=False):
     
     IC final files have a reduced export.
     """
-    print(colorama.Style.BRIGHT+colorama.Fore.YELLOW+
-          "Select subject database file: ")
+    cli.info("Select subject database file: ")
     db_path = get_file(title="Select database JSON file", 
                        filetypes=[("JSON", ".json")])
     if (db_path is None) or (db_path == ""):
@@ -1395,10 +1381,10 @@ def create_final_file(ic_bool=False):
     if analysis_selection is None:
         return
     if create_new_analysis:
-        print(Fore.YELLOW +
-              "Can't create a new analysis during final-file export — "
-              "there'd be nothing in it yet. Pick an existing one." +
-              Style.RESET_ALL)
+        cli.warn(
+            "Can't create a new analysis during final-file export — "
+            "there'd be nothing in it yet. Pick an existing one."
+        )
         return
     analysis_id = analysis_selection["_id"]
 
@@ -1544,8 +1530,7 @@ def create_final_file(ic_bool=False):
                 final_file[idx, x_idx] = point[0]
                 final_file[idx, y_idx] = point[1]
 
-    print(colorama.Style.BRIGHT+colorama.Fore.YELLOW+
-          "Select a location and file name to save your 'final file' to: ")
+    cli.info("Select a location and file name to save your 'final file' to: ")
     save_location = save_file(title="Save final file", 
                               filetypes=[("XLS", ".xls")])
     print(save_location+".xls")
