@@ -8,15 +8,14 @@ import tkinter
 import subprocess
 import analysis_functions as afunc
 import densetc_analysis
-import colorama
-from colorama import Fore, Style, Back
+from colorama import Fore, Style
 import logging
 import json
 import pandas as pd
 from db_adapter import JSONStore
+import cli_utils as cli
 
 
-colorama.init()
 logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
 
 
@@ -29,11 +28,7 @@ def _pick_map_and_analysis():
     Returns (db_path, analysis_id, is_ic), or None if the user backs
     out at the file dialog or analysis picker.
     """
-    while (kind := input("Cortical [c] or IC [i] map? > ")
-           .strip().lower()) not in ("c", "i"):
-        continue
-    is_ic = (kind == "i")
-
+    is_ic = cli.ask_choice("Cortical [c] or IC [i] map? > ", ("c", "i")) == "i"
     db_path = afunc.get_file(title="Select database JSON file",
                              filetypes=[("JSON", ".json")])
     if not db_path:
@@ -140,39 +135,27 @@ if __name__ == "__main__":
                                          filetypes=[("JSON", ".json")])) as f:
                     config_dict = json.load(f)
             except Exception as e:
-                logging.exception(e)
-                print(Style.BRIGHT+Fore.RED+
-                      "Failed to open file. Do better."+
-                      Style.RESET_ALL)
+                cli.fail(e, "Failed to open file. Do better.")
         if ch == "n":
             try:
                 if not (config_dict := afunc.create_config_file()):
                     config_dict = {"project_name": None}
             except Exception as e:
-                logging.exception(e)
-                print(Style.BRIGHT+Fore.RED+
-                      "Something went terribly wrong. Scream into void."+
-                      Style.RESET_ALL)
+                cli.fail(e, "Something went terribly wrong. Scream into void.")
         if ch == "a":
             if config_dict["project_name"] is None:
-                print(Style.BRIGHT+Fore.YELLOW+
-                      "Load a project config file or create a new one first."+
-                      Style.RESET_ALL)
+                cli.warn("Load a project config file, or create a new one.")
                 continue
             densetc_analysis.run_program(config_dict, version)
-            print(Style.BRIGHT+Back.GREEN+
-                  "\nIt's over! :)\n\n"+
-                  Style.RESET_ALL)
+            cli.banner("\nIt's over! :)\n\n")
         if ch == "g":
             if config_dict["project_name"] is None:
-                print(Style.BRIGHT+Fore.YELLOW+
-                      "Load a project config file or create a new one first."+
-                      Style.RESET_ALL)
+                cli.warn("Load a project config file, or create a new one.")
                 continue
-            while (yes_or_no := input("Do you want an SDF calculated for each "
-                                      "tuning curve PSTH [y/n]? (slower) > ")
-                .strip().lower()) not in ("y", "n"):
-                continue
+            yes_or_no = cli.ask_yes_no(
+                "Do you want an SDF calculated for each tuning curve PSTH "
+                "[y/n]? (slower) > "
+            )
             return_sdf = True if yes_or_no == "y" else False
             file = afunc.get_file(title="Select final file", 
                                   filetypes=[("XLS", ".xls")])
@@ -194,14 +177,11 @@ if __name__ == "__main__":
             try:
                 picked = _pick_map_and_analysis()
             except Exception as e:
-                logging.exception(e)
-                print(Style.BRIGHT + Fore.RED +
-                      f"Couldn't open that database: {e}" +
-                      Style.RESET_ALL)
+                cli.fail(e, f"Couldn't open that database: {e}")
                 continue
             if picked is None:
                 continue
             rc = _launch_gui(*picked)
         if ch == "x":
-            print(Style.BRIGHT+Fore.YELLOW+"Well fine ... \n"+Style.RESET_ALL)
+            cli.info("Well fine ... \n")
             continue_program = 0

@@ -8,11 +8,11 @@ import pandas as pd
 from skimage.measure import label, regionprops
 import matplotlib.pyplot as plt
 import datetime
-from colorama import Fore, Style
 import bayesian_bins as bb
 import analysis_functions as afunc
 from functools import partial
 from db_adapter import JSONStore
+import cli_utils as cli
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
@@ -23,14 +23,12 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     today = str(datetime.datetime.now())
     subject_name = input("What is the subject's name? > ").strip()
     
-    print(Style.BRIGHT+Fore.YELLOW+"Select folder to save to: "+
-          Style.RESET_ALL)
+    cli.info("Select folder to save to: ")
     save_dir_path = afunc.get_folder(title="Folder to save to")
 
     use_f32 = False
-    while (file_type := input("Using .[s]rc or .[f]32 file type? > ")
-           .lower().strip()) not in ["f", "s"]:
-        continue
+    file_type = cli.ask_choice("Using .[s]rc or .[f]32 file type? > ", 
+                               ("f", "s"))
     if file_type == "f":
         use_f32 = True
 
@@ -41,14 +39,13 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     image_or_point_list = None
     ic_points_df = pd.DataFrame([{'number': None}])
     if config_dict["do_IC"]:
-        while (response := input("Does this subject have IC data [y/n]? > ")
-               .lower().strip()) not in ["y", "n"]:
-            continue
+        response = cli.ask_yes_no("Does this subject have IC data [y/n]? > ")
         if response == "y":
             ic_bool = True
-            print(Style.BRIGHT+Fore.YELLOW+"Select .csv file listing IC map "
-                  "Penetration numbers with their corresponding depths "
-                  "(Number, then Depth column, no headers): "+Style.RESET_ALL)
+            cli.info(
+                "Select .csv file listing IC map Penetration numbers with " \
+                "corresponding depths (Number,Depth, no headers): "
+            )
             ic_csv = afunc.get_file(title="IC Num,Depth .csv", 
                                     filetypes=[('CSV', '.csv')])
             ic_points_df = pd.read_csv(ic_csv, header=None, 
@@ -57,18 +54,16 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
             ic_points_df = ic_points_df.sort_values("number")
             ic_points_df.reset_index(inplace=True, drop=True)
             
-            while (response := input("Is this an IC only map [y/n]? > ")
-                   .lower().strip()) not in ["y", "n"]:
-                continue
+            response = cli.ask_yes_no("Is this an IC only map [y/n]? > ")
             if response == "y":
                 ic_only = True
 
     image_or_point_list = ""
     if (not ic_only) and (final_file is None):
-        while (image_or_point_list := input("Using [i]mages, [f]inal file, or "
-                                            ".[c]sv for map point data? > ")
-               .lower().strip()) not in ["i", "f", "c"]:
-            continue
+        image_or_point_list = cli.ask_choice(
+            "Using [i]mages, [f]inal file, or .[c]sv for map point data? > ",
+            ("i", "f", "c")
+        )
         if image_or_point_list == "i":
             use_images = True
 
@@ -134,7 +129,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         pytesseract.pytesseract.tesseract_cmd = f"{tess_loc}/tesseract"
         tessdata_config = f"--tessdata-dir '{tess_loc}/tessdata'"
 
-        print(Style.BRIGHT+Fore.YELLOW+"Select map POINTS image:")
+        cli.info("Select map POINTS image:")
         points_im_filename = afunc.get_file(title="Select Map Points image", 
                                             filetypes=[("PNG", ".png")])
         points_image = cv2.imread(points_im_filename, cv2.IMREAD_GRAYSCALE)
@@ -142,13 +137,13 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         points_label = label(points_binary)
         points_regions = regionprops(points_label)
 
-        print(Style.BRIGHT+Fore.YELLOW+"Select map NUMBERS image:")
+        cli.info("Select map NUMBERS image:")
         numbers_im_filename = afunc.get_file(title="Select Map Numbers image", 
                                              filetypes=[("PNG", ".png")])
         numbers_image = cv2.imread(numbers_im_filename, cv2.IMREAD_GRAYSCALE)
         norm_row_max, norm_col_max = numbers_image.shape
 
-        print(Style.BRIGHT+Fore.YELLOW+"Select map MASK image:")
+        cli.info("Select map MASK image:")
         mask_im_filename = afunc.get_file(title="Select Map Mask image", 
                                           filetypes=[("PNG", ".png")])
         mask_image = cv2.imread(mask_im_filename, cv2.IMREAD_GRAYSCALE)
@@ -156,13 +151,11 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         mask_label = label(mask_binary)
         mask_regions = regionprops(mask_label)
         
-        print(Style.RESET_ALL)
-
         if len(mask_regions) != len(points_regions):
-            raise AssertionError(Style.BRIGHT+Fore.RED+
-                                 "Unequal number of Points and Numbers.\n" 
-                                 "Were these files made correctly?"+
-                                 Style.RESET_ALL)
+            raise AssertionError(
+                "Unequal number of Points and Numbers.\n "\
+                "Were these files made correctly?"
+            )
 
         map_height, map_width = points_image.shape
         points_list = []
@@ -199,9 +192,9 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
 
     elif not ic_only:
         if image_or_point_list == "f":
-            print(Style.BRIGHT+Fore.YELLOW+
-                  "Select spreadsheet containing 'final file' format data:"+
-                  Style.RESET_ALL)
+            cli.info(
+                "Select spreadsheet containing 'final file' format data:"
+            )
             coords_sheet = afunc.get_file(title="Select final file",
                                           filetypes=[("XLS", ".xls")])
             map_points_df = pd.read_excel(coords_sheet, 
@@ -209,10 +202,10 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                                           usecols=[40, 41, 43], 
                                           names=["x", "y", "number"])
         elif image_or_point_list == "c":
-            print(Style.BRIGHT+Fore.YELLOW+"Select .csv file containing "
-                  "Number, x, y columns IN THAT ORDER (no headers):"+
-                  Style.RESET_ALL)
-            coords_sheet = afunc.get_file(title="Select Map Num,x,y file", 
+            cli.info(
+                "Select .csv file with cols number,x,y (no headers):"
+            )
+            coords_sheet = afunc.get_file(title="Select Map number,x,y file",
                                           filetypes=[("CSV", ".csv")])
             map_points_df = pd.read_csv(coords_sheet, 
                                         header=None, 
@@ -248,11 +241,9 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                                                    map_width, map_height)
 
         # Verify voronoi by plotting patches, then save!
-        #print(Fore.GREEN+"Displaying voronoi data (close whenever)..."+
-        #      Style.RESET_ALL)
+        #cli.success("Displaying voronoi data (clsoe whenever)...")
         #afunc.check_voronoi(sites_list, bonus_pts)
-        print(Fore.GREEN+"\nSaving map sites / voronoi data ... \n\n"+ 
-              Style.RESET_ALL)
+        cli.success("Saving map sites / voronoi data ... \n\n")
         db_sites.insert_many(sites_list)
 
     """
@@ -261,10 +252,10 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     Skips any files missing a corresponding point in points_list.
     If using IC, it checks against penetration number instead of map number.
     """
-    print(Style.BRIGHT+Fore.YELLOW+
-          f"Select dir containing all Brainware files for subject "
-          "(subfolders will be skipped):"+
-          Style.RESET_ALL)
+    cli.info(
+        "Select dir containing all Brainware files for subject"
+        "(subfolders will be skipped):"
+    )
     dir_path = afunc.get_folder(title=f"Select Brainware data dir")
     
     nums = map_points_df.number.values
@@ -290,9 +281,10 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                                  afunc.get_penetration_number(n) in ic_pens))
         bw_files[dataset] = [bw_func(filename=dir_path+entry.name) for 
                              entry in data_dir if check_file(entry.name)]
-        print(Fore.GREEN+
-              f"{len(bw_files[dataset])} {ext} {pattern} files found "
-              "and matched to mapping sites."+Style.RESET_ALL)
+        cli.success(
+            f"{len(bw_files[dataset])} {ext} {pattern} files found and " \
+            "matched to mapping sites."
+        )
 
     # Tuning curves
     if config_dict["do_densetc"]:
@@ -336,7 +328,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                 densetc_analysis_list.append(r["analysis_dict"])
 
         # End of DenseTC analysis section
-        print(Fore.GREEN+"\nSaving densetc data/analysis..."+Style.RESET_ALL)
+        cli.success("\nSaving densetc data/analysis...")
         db_densetc_data.insert_many(densetc_data_list)
         db_densetc_analysis.insert_many(densetc_analysis_list)
         if ic_bool:
@@ -367,7 +359,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                 speech_IC_data_list.append(r)
             else:
                 speech_data_list.append(r)
-        print(Fore.GREEN+"\nSaving speech data..."+Style.RESET_ALL)
+        cli.success("\nSaving speech data...")
         db_speech_data.insert_many(speech_data_list)
         if ic_bool:
             db_speech_IC_data.insert_many(speech_IC_data_list)
@@ -396,7 +388,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                 burst_IC_data_list.append(r)
             else:
                 burst_data_list.append(r)
-        print(Fore.GREEN+"\nSaving noiseburst data..."+Style.RESET_ALL)
+        cli.success("\nSaving noiseburst data...")
         db_noiseburst_data.insert_many(burst_data_list)
         if ic_bool:
             db_noiseburst_IC_data.insert_many(burst_IC_data_list)
