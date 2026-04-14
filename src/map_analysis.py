@@ -8,8 +8,7 @@ import tkinter
 import subprocess
 import analysis_functions as afunc
 import densetc_analysis
-import colorama
-from colorama import Fore, Style, Back
+from colorama import Fore, Style
 import logging
 import json
 import pandas as pd
@@ -17,7 +16,6 @@ from db_adapter import JSONStore
 import cli_utils as cli
 
 
-colorama.init()
 logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
 
 

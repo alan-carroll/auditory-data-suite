@@ -8,7 +8,6 @@ import pandas as pd
 from skimage.measure import label, regionprops
 import matplotlib.pyplot as plt
 import datetime
-from colorama import Fore, Style
 import bayesian_bins as bb
 import analysis_functions as afunc
 from functools import partial

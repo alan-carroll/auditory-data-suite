@@ -18,15 +18,12 @@ from skimage.filters import gaussian, threshold_otsu
 from skimage.measure import label, regionprops
 import logging
 import uuid
-import colorama
 import datetime
 import os
 from shapely.geometry import Point
 import voronoi_picker
 from scipy.spatial import Voronoi
 from scipy.stats import ttest_ind
-import colorama
-from colorama import Fore, Style
 from db_adapter import JSONStore
 import cli_utils as cli
 
