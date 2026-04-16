@@ -3,9 +3,9 @@ import itertools
 import json
 import bisect
 import pandas as pd
-#import tkinter as tk
-import mttkinter.mtTkinter as tk
-from tkinter import filedialog, simpledialog, messagebox
+# Re-exported so existing `afunc.get_file(...)` call sites keep working.
+from dialogs import (get_file, get_folder, save_file,
+                     ask_string, confirm, load_analysis)
 import re
 from collections import defaultdict
 import burst_detection as bd
@@ -492,99 +492,6 @@ def get_bandwidth(bw_start, bw_stop):
     return np.log2(bw_stop / bw_start)
 
 
-def load_analysis(analysis_metadata_collection):
-    """
-    Load menu allowing user to choose existing analysis or create a new one.
-    
-    Takes a tinydb "mongo" collection as input.
-    Frozen analyses cannot be loaded from this function.
-    
-    Returns a pandas Series of analysis metadata (or None if user exits menu),
-      and a new_analysis flag (True/False) to indicate if selected analysis 
-      should be loaded or a new analysis created from the selection.
-    """
-    global selected_analysis
-    global new_analysis
-    selected_analysis = None
-    new_analysis = False
-    existing_analyses = pd.DataFrame([entry for entry in 
-                                      analysis_metadata_collection.find({})])
-    choices = {f"{val[0]}: {val[1]}": idx for idx, val in
-               enumerate(existing_analyses[["name", "comments"]].values)}
-
-    root = tk.Tk()
-    root.title("Select Analysis or Create New")
-    mainframe = tk.Frame(root)
-    mainframe.grid(column=0, row=0, stick=(tk.N, tk.W, tk.E, tk.S))
-    mainframe.columnconfigure(0, weight=1)
-    mainframe.rowconfigure(0, weight=1)
-    mainframe.pack(pady=100, padx=100)
-
-    tk_var = tk.StringVar(root)
-    popup_menu = tk.OptionMenu(mainframe, tk_var, *choices)
-    tk.Label(mainframe, 
-             text="Load an existing analysis, or create a new one (select an "
-             "existing analysis to use as a starting template):"
-             ).grid(row=2, column=2)
-    metadata_var = tk.StringVar(root)
-    metadata_var.set("name: \n\nstart_date: \nlast_modified: \n\ncomments: "
-                     "\n\nfrozen: \nid: \n\n")
-    tk.Label(mainframe, textvariable=metadata_var).grid(row=1, column=2)
-    popup_menu.grid(row=3, column=2)
-
-    def change_dropdown(*args):
-        selection = existing_analyses.iloc[choices[tk_var.get()]]
-        metadata_var.set(f"name: {selection['name']}\n\n"
-                         f"start_date: {selection['start_date']}\n"
-                         f"last_modified: {selection['last_modified']}\n\n"
-                         f"comments: {selection['comments']}\n\n"
-                         f"frozen: {selection['frozen']}\n"
-                         f"id: {selection['_id']}\n")
-
-    def select_analysis(*args):
-        global selected_analysis
-        selection = tk_var.get()
-        if not selection:
-            return
-
-        selected_analysis = existing_analyses.iloc[choices[selection]]
-        if selected_analysis['frozen']:
-            selected_analysis = None
-            simpledialog.messagebox.showerror(
-                "Frozen", 
-                "Selected analysis is frozen, and cannot be updated.")
-            return
-        close_window()
-
-    def create_analysis(*args):
-        global selected_analysis
-        global new_analysis
-        selection = tk_var.get()
-        if not selection:
-            return
-
-        selected_analysis = existing_analyses.iloc[choices[selection]]
-        new_analysis = True
-        close_window()
-
-    def close_window(*args):
-        root.quit()
-        root.destroy()
-
-    tk.Button(mainframe, text="Load Selected Analysis", 
-              command=select_analysis).grid(row=4, column=1)
-    tk.Button(mainframe, text="Create New From Selected Analysis", 
-              command=create_analysis).grid(row=4, column=3)
-
-    tk_var.trace("w", change_dropdown)
-
-    root.bind("<Escape>", lambda e: close_window())
-    root.protocol("WM_DELETE_WINDOW", close_window)
-    root.mainloop()
-    
-    return selected_analysis, new_analysis
-
-
 def create_new_densetc_analysis(template_id, new_metadata, 
                                 analysis_metadata_collection, 
                                 densetc_analysis_collection, 
@@ -635,21 +542,17 @@ def new_analysis_metadata_document():
     GUI callers should use build_analysis_metadata() directly with their
     own Kivy-collected inputs instead of calling this.
     """
-    root = tk.Tk()
-    root.withdraw()
-    answer = False
-    while not answer:
-        while (name := simpledialog.askstring(
-            "Input Name", "Who is doing the analysis?")) is None:
+    while True:
+        while (name := ask_string("Input Name",
+                                  "Who is doing the analysis?")) is None:
             continue
-        while (comments := simpledialog.askstring(
-            "Comment", "Write a brief comment about analysis:")) is None:
+        while (comments := ask_string(
+                "Comment", "Write a brief comment about analysis:")) is None:
             continue
-        answer = messagebox.askyesno(
-            "Verify", 
-            f"Is this correct?\nName: {name}\n\nComments: {comments}")
-    root.destroy()
-    return build_analysis_metadata(name, comments)
+        if confirm("Verify",
+                   f"Is this correct?\nName: {name}\n\n"
+                   f"Comments: {comments}"):
+            return build_analysis_metadata(name, comments)
 
 def build_analysis_metadata(name, comments):
     """
@@ -1393,7 +1296,7 @@ def create_final_file(ic_bool=False):
     # just be exporting the template you cloned. Bail with a message if
     # the user tries it.
     analysis_selection, create_new_analysis = \
-        load_analysis(analysis_metadata_collection)
++        load_analysis(analysis_metadata_collection.find({}))
     if analysis_selection is None:
         return
     if create_new_analysis:
