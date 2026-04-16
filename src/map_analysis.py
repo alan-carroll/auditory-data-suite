@@ -110,6 +110,10 @@ def _launch_gui(db_path, analysis_id, is_ic):
 
 
 def _ocr_template_tools():
+    # TODO
+    print("Not yet implemented.")
+    return
+
     while True:
         print(Fore.CYAN + Style.BRIGHT)
         print("\nOCR template tools:")
@@ -118,11 +122,12 @@ def _ocr_template_tools():
         print(f" * e[{Fore.WHITE}x{Fore.CYAN}]it OCR tools")
         print(Style.RESET_ALL)
 
+        # TODO finish implementing
         ch = input("> ").strip().lower()
         if ch == "b":
-            densetc_analysis.bootstrap_digit_templates_cli()
+            pass
         elif ch == "p":
-            densetc_analysis.preview_digit_templates_cli()
+            pass
         elif ch == "x":
             break
 
