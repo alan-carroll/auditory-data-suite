@@ -34,6 +34,11 @@ from colorama import Back
 # TODO this is just temp solution that'll be subsumed by a more complete refactor
 BW_LEVELS = (10, 20, 30, 40)
 
+# Auditory field name -> integer code used by the v-plot final-file format.
+# TODO unify with GUI
+_FIELD_CODES = {"": 0, "A1": 0, "AAF": 1, "PAF": 2, "Other": 3,
+                "VAF": 4, "NAR": 5, "SRAF": 6}
+
 TCResult = namedtuple(
     "TCResult",
     "tc_image cf thresh bw_idx continuous_bw"
@@ -1020,21 +1025,7 @@ def create_final_file(ic_bool=False):
         else:
             analysis_entry = analysis_df[site_number]
         
-        field = analysis_entry["field_assignment"]
-        if (field == "A1") or (field == ""):
-            field = 0
-        elif field == "AAF":
-            field = 1
-        elif field == "PAF":
-            field = 2
-        elif field == "Other":
-            field = 3  # v-plot treats as DAF
-        elif field == "VAF":
-            field = 4
-        elif field == "NAR":
-            field = 5
-        elif field == "SRAF":
-            field = 6  # Not coded in v-plot yet, but might be later
+        field = _FIELD_CODES[analysis_entry["field_assignment"]]
         
         if ic_bool:
             electrode = site_number % 2
