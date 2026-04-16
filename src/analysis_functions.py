@@ -448,30 +448,32 @@ def check_csv_points(points_df):
     plt.show()
 
 
+def snap_idx(grid_vals, input_value, allow_zero=True):
+    """
+    Index into `grid_vals` of the entry closest to `input_value`.
+    Same allow_zero convention as snap(); returns None when triggered.
+    """
+    if input_value == 0 and not allow_zero:
+        return None
+    ix = bisect.bisect_right(grid_vals, input_value)
+    if ix == 0:
+        return 0
+    if ix == len(grid_vals):
+        return ix - 1
+    lo, hi = grid_vals[ix - 1], grid_vals[ix]
+    return ix - 1 if abs(lo - input_value) <= abs(hi - input_value) else ix
+
+
 def snap(grid_vals, input_value, allow_zero=True):
     """
-    Useful function to snap any cf, thresh, BW's, freq or int to nearest values 
-      of known input, grid_vals.
-      eg. grid_vals is list of possible frequencies, 
-          input_val is frequency slightly off from grid of possible vals.
-          
     Returns the value in grid_vals that input_value is closest to.
-    
+
     Idiosyncrasy: 'final file' values use 0 to indicate a null value. 
       To deal with this and properly return a null value instead of a snapped 
       value, pass keyword argument allow_zero=False.
-    """
-    if (input_value == 0) and (allow_zero is False):
-        return None
-
-    ix = bisect.bisect_right(grid_vals, input_value)
-    if ix == 0:
-        return grid_vals[0]
-    elif ix == len(grid_vals):
-        return grid_vals[-1]
-    else:
-        return min(grid_vals[ix - 1], grid_vals[ix], 
-                   key=lambda grid_value: abs(grid_value - input_value))
+      """
+    idx = snap_idx(grid_vals, input_value, allow_zero)
+    return None if idx is None else grid_vals[idx]
 
 
 def scale_coordinates(input_coor, min_coor, max_coor, min_scale, max_scale):

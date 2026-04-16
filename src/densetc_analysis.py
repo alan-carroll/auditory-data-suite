@@ -480,10 +480,10 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         else:
             # Snap variable final file analysis values to true values
             # eg. Threshold of 10.7 dB snaps to 10 dB
-            cf_khz = afunc.snap(freqs/1000, row["cf"].values)
-            thresh_db = int(afunc.snap(ints, row["thresh"].values))
-            cf = int(np.where(int(cf_khz*1000) == freqs.astype(int))[0][0])
-            thresh = int(np.where(thresh_db == ints)[0][0])
+            cf = afunc.snap_idx(freqs / 1000, row["cf"].values)
+            cf_khz = freqs[cf] / 1000
+            thresh = afunc.snap_idx(ints, row["thresh"].values)
+            thresh_db = ints[thresh]
             
         bw_idx, bw_khz, bw_oct = {}, {}, {}
         for lvl in BW_LEVELS:
