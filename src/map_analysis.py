@@ -102,6 +102,29 @@ def _launch_gui(db_path, analysis_id, is_ic):
     return p.returncode
 
 
+def _ocr_template_tools():
+    # TODO
+    print("Not yet implemented.")
+    return
+
+    while True:
+        print(Fore.CYAN + Style.BRIGHT)
+        print("\nOCR template tools:")
+        print(f" * [{Fore.WHITE}b{Fore.CYAN}]ootstrap new template set")
+        print(f" * [{Fore.WHITE}p{Fore.CYAN}]review template set")
+        print(f" * e[{Fore.WHITE}x{Fore.CYAN}]it OCR tools")
+        print(Style.RESET_ALL)
+
+        # TODO finish implementing
+        ch = input("> ").strip().lower()
+        if ch == "b":
+            pass
+        elif ch == "p":
+            pass
+        elif ch == "x":
+            break
+
+
 if __name__ == "__main__":
     version = "1.0"
     continue_program = 1
@@ -123,6 +146,7 @@ if __name__ == "__main__":
         print(f" * [{Fore.WHITE}l{Fore.CYAN}]oad project configuration")
         print(f" * [{Fore.WHITE}a{Fore.CYAN}]nalyze subject")
         print(f" * [{Fore.WHITE}g{Fore.CYAN}]enerate analysis from final file")
+        print(f" * [{Fore.WHITE}o{Fore.CYAN}]cr template tools")
         print(f" * [{Fore.WHITE}s{Fore.CYAN}]elect fields GUI")
         print(f" * [{Fore.WHITE}f{Fore.CYAN}]inal-file generation")
         print(f" * [{Fore.WHITE}i{Fore.CYAN}]c final-file generation")
@@ -169,6 +193,14 @@ if __name__ == "__main__":
             densetc_analysis.run_program(config_dict, version, 
                                          final_file=map_df,
                                          return_sdf=return_sdf)
+        if ch == "o":
+            try:
+                _ocr_template_tools()
+            except Exception as e:
+                logging.exception(e)
+                print(Style.BRIGHT + Fore.RED +
+                      f"OCR tool chaos: {e}" +
+                      Style.RESET_ALL)
         if ch == "f":
             afunc.create_final_file()
         if ch == "i":

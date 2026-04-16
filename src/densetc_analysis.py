@@ -1,7 +1,7 @@
-import pytesseract
 import cv2
 import numpy as np
 import os
+from pathlib import Path
 from neo.io.brainwaresrcio import BrainwareSrcIO
 from neo.io.brainwaref32io import BrainwareF32IO
 import pandas as pd
@@ -17,6 +17,11 @@ import cli_utils as cli
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
 
+from digit_ocr import DigitOCR
+
+RESOURCES = Path("../resources")
+TEMPLATE_FILE = RESOURCES / "digit_templates.npz"
+FONT_FILE = RESOURCES / "OCR-A.otf"
 
 def run_program(config_dict, version, final_file=None, return_sdf=True):
     analysis_version = f"map_auto_analysis v{version}"
@@ -115,19 +120,16 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     map_height = 1
     map_points_df = pd.DataFrame([{'number': None}])
     if use_images:
-        """
-        Extract numbers/points from mapping images using tesseract
-        See https://tesseract-ocr.github.io/tessdoc/Home.html 
-          and https://github.com/UB-Mannheim/tesseract/wiki
-        Uses custom OCR file, mapOCR. Don't lose this file! 
-          Can always re-train, but pain in the ass
-        File goes in /tessdata/ dir of Tesseract install location 
-          (hardcoded for default install location)
-        """
-        ocr_lang = "mapOCR"
-        tess_loc = "C:/Program Files/Tesseract-OCR"
-        pytesseract.pytesseract.tesseract_cmd = f"{tess_loc}/tesseract"
-        tessdata_config = f"--tessdata-dir '{tess_loc}/tessdata'"
+        # Load or build digit recognition templates
+        if TEMPLATE_FILE.exists():
+            OCR = DigitOCR.load(TEMPLATE_FILE)
+        elif FONT_FILE.exists():
+            OCR = DigitOCR.from_font(FONT_FILE)
+        else:
+            raise FileNotFoundError(
+                "No templates or font file found. Add a font .ttf/.otf file " \
+                "to or run the digit template bootstrap option."
+            )
 
         cli.info("Select map POINTS image:")
         points_im_filename = afunc.get_file(title="Select Map Points image", 
@@ -158,37 +160,32 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
             )
 
         map_height, map_width = points_image.shape
-        points_list = []
-        points_centroids = np.array([c for c in 
-                                     [r.centroid for r in points_regions]])
-        # TODO Check if all available points have been matched
-        # For each mask, OCR map # and match to point shortest distance away
+        points_centroids = np.array([
+            c for c in [r.centroid for r in points_regions]
+        ])
+        # OCR each masked digit crop and grab the mapping point closest to it
+        results = []
         for mask_props in mask_regions:
             bbox = mask_props.bbox
-            number = numbers_image[bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            ocr_num = pytesseract.image_to_string(number, 
-                                                  config=tessdata_config, 
-                                                  lang=ocr_lang)
-            # In apparently random rare cases, OCR fails to find a number.
-            # Prompt user in this case:
-            if ocr_num == "":
-                print(Style.BRIGHT+Fore.MAGENTA+
-                      "OCR failure! What is this number? "+Style.RESET_ALL)
-                plt.imshow(number)
-                plt.pause(0.1)
-                ocr_num = input("Answer: > ")
+            crop = numbers_image[bbox[0]:bbox[2], bbox[1]:bbox[3]]
+            ocr_result = OCR.recognize(crop)
 
             distances = np.linalg.norm(
                 points_centroids - np.array(mask_props.centroid), axis=1)
             point = points_centroids[np.argmin(distances)]
-            x = point[1] / norm_col_max
-            y = point[0] / norm_row_max
+            ocr_result.metadata["x"] = point[1] / norm_col_max
+            ocr_result.metadata["y"] = 1 - (point[0] / norm_row_max) # flip y
+            results.append(ocr_result)
 
-            points_list.append({"number": int(ocr_num), "x": x, "y": y})
+        # Option to review OCR results to check for mistakes
+        OCR.review_results(results)
 
-        map_points_df = pd.DataFrame(points_list)
-        # y-axis coordinates are image-indexed (flipped)
-        map_points_df["y"] = map_points_df["y"].apply(lambda x: 1 - x)
+        # TODO Check if all available points have been matched
+        
+        map_points_df = pd.DataFrame(
+            [{"number": r.number, "x": r.metadata["x"], "y": r.metadata["y"]}
+             for r in results]
+        )
 
     elif not ic_only:
         if image_or_point_list == "f":
