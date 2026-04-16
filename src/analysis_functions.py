@@ -14,7 +14,6 @@ import math
 from scipy.spatial import Delaunay
 import numpy as np
 import shapely.geometry as geometry
-from skimage.filters import gaussian, threshold_otsu
 from skimage.measure import label, regionprops
 import logging
 import uuid
@@ -37,7 +36,7 @@ BW_LEVELS = (10, 20, 30, 40)
 
 TCResult = namedtuple(
     "TCResult",
-    "tc_image filtered_tc cf thresh bw_idx continuous_bw convex_image"
+    "tc_image cf thresh bw_idx continuous_bw"
 )
 
 def bw_idx_to_units(bw_idx, freqs_hz):
@@ -877,180 +876,79 @@ def remove_spont(sweep, driven_onset_ms=8, driven_offset_ms=38,
     return spikes
 
 
-def analyze_tuning_curve(tc_array):
+def _extract_tc_properties(value_image, binary_mask):
     """
-    TODO Deprecate.
-    Older analysis attempt, prefer ttest_analyze_tuning_curve now.
-    
-    Takes a tc_array from get_tuning_curve_array().
-    
-    Returns a filtered TC array and analysis items like CF, Threshold, etc.
-    
-    Blurs data using a median filter, calculates region properties from a 
-      thresholded and binarized version, and then selects the biggest blob as
-      the probable tuning curve.
-    
-    Filters and params were determined empirically for "good enough" results.
+    Region analysis on a binarized tuning curve.
+
+    Picks the largest connected region in `binary_mask`, masks
+    `value_image` down to that region, and reads CF / threshold /
+    bandwidths from it. Returns a TCResult; when no region exists all
+    analysis fields are None/absent and `tc_image` is the input
+    unchanged.
     """
-    med_im = gaussian(tc_array, sigma=1.5)
-    try:
-        med_thresh = threshold_otsu(med_im)
-    except ValueError:
-        # Image is empty or only has 1 unique value, and threshold_otsu 
-        # doesn't like that
-        med_thresh = 0
-    med_binary = med_thresh < med_im
-    med_label = label(med_binary)
-    med_regions = regionprops(med_label)
+    labeled = label(binary_mask)
+    regions = regionprops(labeled)
+    if not regions:
+        return TCResult(
+            tc_image=value_image, cf=None, thresh=None,
+            bw_idx={lvl: [None, None] for lvl in BW_LEVELS},
+            continuous_bw=[None])
 
-    big_r = 0
-    if med_regions:
-        for r_idx, r in enumerate(med_regions):  # Select biggest region
-            if med_regions[r_idx].area > med_regions[big_r].area:
-                big_r = r_idx
-        med_bb = med_regions[big_r].bbox
-        med_minr, med_minc, med_maxr, med_maxc = med_bb
-        thresh = med_minr
-        # Get CF by removing all data from original TC image except what is in 
-        # the selected TC blob and then searching for the column index which
-        # has the most "spikes"
-        tc_im_copy = med_im.copy()
-        non_tc_ind = np.where(med_label != [med_regions[big_r].label])
-        tc_im_copy[non_tc_ind] = 0
-        cf = int(np.argmax(tc_im_copy[med_minr, :]))
-        # Get final_file-style BW's; assign None to any of 10-40 if they exceed 
-        # range of intensity.
-        # Using tolist() to make data JSON-serializable
-        # Using convex_image instead of TC to smooth jagged edges of blur and 
-        # produce more consistent contours
-        cvx_im = tc_im_copy.copy()
-        cvx_im[med_minr:med_maxr, med_minc:med_maxc] = \
-            med_regions[big_r].convex_image
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 2, :])
-            bw10 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw10 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 4, :])
-            bw20 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw20 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 6, :])
-            bw30 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw30 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 8, :])
-            bw40 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw40 = [None, None]
+    big = max(regions, key=lambda r: r.area)
+    minr, _, maxr, _ = big.bbox
 
-        # Get continuous BWs
-        cont_bw = []
-        bw_level = med_minr
-        # Since not prescribing existence of bw10->bw40, no need for try/except
-        # clause.
-        # maxr and maxc map to the values just beyond real values. Therefore, 
-        # indexing at maxr exceeds the index of the image. 
-        #   Using maxr-1 to avoid index error
-        while bw_level < med_maxr-1:
-            # Start 1 level higher than thresh. Should end on maxr
-            response_idx = np.where(tc_im_copy[bw_level+1, :])
-            cont_bw.append(np.array([response_idx[0][0], 
-                                     response_idx[0][-1]]).tolist())
-            bw_level = bw_level + 1
+    # Zero everything outside the selected region so BW/CF reads only
+    # see the tuning curve, not stray blobs.
+    tc = value_image.copy()
+    tc[labeled != big.label] = 0
 
-    else:
-        # If latency found, but no region is found (rare/impossible, yes?), 
-        # don't assign cf, thresh, or bw's
-        thresh = cf = None
-        bw10 = bw20 = bw30 = bw40 = [None, None]
-        cont_bw = [None]
-        tc_im_copy = med_im  # Just return image (should be empty).
-        cvx_im = med_im
+    cf = int(np.argmax(tc[minr, :]))
 
-    filtered_tc = med_im.copy()
-    filtered_tc[~med_binary] = 0
-    result = (tc_im_copy, filtered_tc, cf, thresh, bw10, bw20, bw30, bw40, 
-              cont_bw, cvx_im)
-    
-    return result
+    # BW at each level: first/last responsive column at the row
+    # `level/5` steps above threshold. Row off the grid → absent.
+    # The /5 assumes 5 dB intensity spacing.
+    # TODO Future PR with StimConfig so this becomes cfg.bw_row_offset(lvl).
+    bw_idx = {}
+    for lvl in BW_LEVELS:
+        try:
+            cols = np.where(tc[minr + lvl // 5, :])[0]
+            bw_idx[lvl] = [int(cols[0]), int(cols[-1])]
+        except IndexError:
+            bw_idx[lvl] = [None, None]
+
+    # Continuous BW: every row from thresh+1 to the top of the region.
+    # A connected region's bbox guarantees at least 1 pixel per row, so no
+    # empty-cols guard needed.
+    cont_bw = []
+    for row in range(minr + 1, maxr):
+        cols = np.where(tc[row, :])[0]
+        cont_bw.append([int(cols[0]), int(cols[-1])])
+
+    return TCResult(tc_image=tc, cf=cf, thresh=minr,
+                    bw_idx=bw_idx, continuous_bw=cont_bw)
 
 
 def ttest_analyze_tuning_curve(tc_array):
     """
-    TODO Rewrite. Uses the same vars/logic as older analyze_tuning_curve(), but
-      that was just for compatibility at the time. This can be improved.
-      
-    Blob analysis on a ttest TC generated from ttest_driven_vs_spont_tc().
-    
-    Returns the TC back and analysis items like CF, Threshold, etc.
+    Region analysis on a t-test-smoothed TC (output of
+    ttest_driven_vs_spont_tc). Any nonzero cell is treated as
+    responsive. Returns a TCResult.
+
+    TODO preserves callers' logic during refactor, but this should be
+    absorbed eventually since it's so simple now
     """
-    med_binary = 0 < tc_array
-    med_label = label(med_binary)
-    med_regions = regionprops(med_label)
+    return _extract_tc_properties(tc_array, tc_array > 0)
 
-    big_r = 0
-    if med_regions:
-        for r_idx, r in enumerate(med_regions):  # Select biggest region
-            if med_regions[r_idx].area > med_regions[big_r].area:
-                big_r = r_idx
-        med_bb = med_regions[big_r].bbox
-        med_minr, med_minc, med_maxr, med_maxc = med_bb
-        thresh = med_minr
-        # Get CF by removing all data from original TC image except what is in 
-        # the selected TC blob and then searching for the column index which 
-        # has the most "spikes"
-        tc_im_copy = tc_array.copy()
-        non_tc_ind = np.where(med_label != [med_regions[big_r].label])
-        tc_im_copy[non_tc_ind] = 0
-        cf = int(np.argmax(tc_im_copy[med_minr, :]))
-        cvx_im = tc_im_copy.copy()
-        cvx_im[med_minr:med_maxr, med_minc:med_maxc] = \
-            med_regions[big_r].convex_image
 
-        # BW at each level: first/last responsive column at the row
-        # `level/5` steps above threshold. Row off the grid → absent.
-        # The /5 assumes 5 dB intensity spacing; 
-        # TODO future PR will wire StimConfig so this becomes cfg.bw_row_offset(lvl).
-        bw_idx = {}
-        for lvl in BW_LEVELS:
-            try:
-                cols = np.where(tc_im_copy[med_minr + lvl // 5, :])[0]
-                bw_idx[lvl] = [int(cols[0]), int(cols[-1])]
-            except IndexError:
-                bw_idx[lvl] = [None, None]
-
-        # Get continuous BWs
-        cont_bw = []
-        bw_level = med_minr
-        # Since not prescribing existence of bw10->bw40, no need for try/except
-        # clause.
-        # maxr and maxc map to the values just beyond real values. Therefore, 
-        # indexing at maxr exceeds the index of the image.
-        #   Using maxr-1 to avoid index error
-        while bw_level < med_maxr-1:
-            # Start 1 level higher than thresh. Should end on maxr
-            response_idx = np.where(tc_im_copy[bw_level+1, :])
-            cont_bw.append(np.array([response_idx[0][0], 
-                                     response_idx[0][-1]]).tolist())
-            bw_level = bw_level + 1
-
-    else:
-        # If latency found, but no region is found (rare/impossible, yes?), 
-        # don't assign cf, thresh, or bw's
-        thresh = cf = None
-        bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
-        cont_bw = [None]
-        tc_im_copy = tc_array  # Just return image (should be empty).
-        cvx_im = tc_array
-
-    filtered_tc = tc_array.copy()
-    filtered_tc[~med_binary] = 0
-    return TCResult(tc_im_copy, filtered_tc, cf, thresh, bw_idx,
-                    cont_bw, cvx_im)
+# The legacy gaussian/otsu variant is gone. If it's ever needed again:
+#
+#   def analyze_tuning_curve(tc_array):
+#       blurred = gaussian(tc_array, sigma=1.5)
+#       try:
+#           t = threshold_otsu(blurred)
+#       except ValueError:
+#           t = 0
+#       return _extract_tc_properties(blurred, blurred > t)
     
 
 def create_final_file(ic_bool=False):
