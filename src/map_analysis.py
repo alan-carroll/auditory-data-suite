@@ -3,8 +3,6 @@ matplotlib.use("TkAgg")
 
 import os
 import sys
-import time
-import tkinter
 import subprocess
 import analysis_functions as afunc
 import densetc_analysis
@@ -14,6 +12,7 @@ import json
 import pandas as pd
 from db_adapter import JSONStore
 import cli_utils as cli
+from dialogs import pump_until
 
 
 logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
@@ -37,7 +36,7 @@ def _pick_map_and_analysis():
     db = JSONStore(db_path)
     meta_coll = db.analysis_metadata
 
-    selection, create_new = afunc.load_analysis(meta_coll)
+    selection, create_new = afunc.load_analysis(meta_coll.find({}))
     if selection is None:
         return None
 
@@ -83,22 +82,9 @@ def _launch_gui(db_path, analysis_id, is_ic):
             "--db", db_path, "--analysis-id", str(analysis_id)]
     if is_ic:
         argv.append("--ic")
-    pump = tkinter.Tk()
-    pump.withdraw()
     p = subprocess.Popen(argv)
-    try:
-        while p.poll() is None:
-            try:
-                pump.update()
-            except tkinter.TclError:
-                p.wait()
-                break
-            time.sleep(0.05)
-    finally:
-        try:
-            pump.destroy()
-        except Exception:
-            pass
+    pump_until(lambda: p.poll() is not None)
+    p.wait()  # if pump exited via TclError, child may still be running
     return p.returncode
 
 
