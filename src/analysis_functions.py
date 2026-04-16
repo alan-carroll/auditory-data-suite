@@ -1296,7 +1296,7 @@ def create_final_file(ic_bool=False):
     # just be exporting the template you cloned. Bail with a message if
     # the user tries it.
     analysis_selection, create_new_analysis = \
-+        load_analysis(analysis_metadata_collection.find({}))
+        load_analysis(analysis_metadata_collection.find({}))
     if analysis_selection is None:
         return
     if create_new_analysis:
