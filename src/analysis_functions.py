@@ -547,33 +547,16 @@ def prettify_spike_dict(spike_dict, dataset=None):
 
 def get_times_from_spike_dict(spike_dict, is_pretty=False):
     """
-    Quick function just to contain the semantic ugliness of getting spiketimes.
-    Takes a spike_dict made from processing Brainware file/block in 
-      get_spike_dict().
-    If is_pretty, expects a list of prettified spike_dicts with spikes_ms keys
-    
-    Returns flattened array of spiketimes (useful for PSTH generation)
-    
-    No, this doesn't need to be a 3x nested list comprehension, but I had fun
-    writing it and it's just a utility function.
+    Flat list of every spiketime across every stimulus and every sweep.
+
+    `spike_dict` is either the raw {params: [[sweep], ...]} mapping from
+    get_spike_dict (is_pretty=False) or the list-of-dicts form from
+    prettify_spike_dict (is_pretty=True).
     """
-    if is_pretty:
-        satans_list_comp = [
-            time for sweep in
-            [sweep for stim_dict in
-             [stim_dict["spikes_ms"] for stim_dict in spike_dict]
-             for sweep in stim_dict]
-             for time in sweep
-        ]
-    else:
-        satans_list_comp = [
-            time for sweep in
-            [sweep for stimulus in 
-            [stimulus for stimulus in spike_dict.values()]
-            for sweep in stimulus]
-            for time in sweep
-        ]
-    return satans_list_comp
+    per_stim = ((d["spikes_ms"] for d in spike_dict) if is_pretty
+                else spike_dict.values())
+    sweeps = itertools.chain.from_iterable(per_stim)
+    return list(itertools.chain.from_iterable(sweeps))
 
 
 def alpha_shape(points, alpha):
