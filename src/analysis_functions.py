@@ -27,6 +27,8 @@ from scipy.stats import ttest_ind
 from db_adapter import JSONStore
 import cli_utils as cli
 from collections import namedtuple
+from stimulus_specs import STIM_SPECS
+from colorama import Back
 
 # dB-above-threshold levels at which bandwidths are measured. Mirrors
 # StimConfig.bw_levels_db;
@@ -57,41 +59,6 @@ def bw_idx_to_units(bw_idx, freqs_hz):
             octave[lvl] = get_bandwidth(freqs_hz[lo], freqs_hz[hi]).tolist()
     return khz, octave
 
-def get_folder(**kwargs):
-    """
-    Open simple Tk dialog to select a directory.
-    Returns string containing dir path
-    """
-    root = tk.Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory(**kwargs) + "/"
-    root.destroy()
-    return folder
-
-
-def get_file(**kwargs):
-    """
-    Open simple Tk dialog to select a file.
-    Returns string containing dir path + filename
-    """
-    root = tk.Tk()
-    root.withdraw()
-    filename = filedialog.askopenfilename(**kwargs)
-    root.destroy()
-    return filename
-
-
-def save_file(**kwargs):
-    """
-    Open simple Tk dialog to save a filename + dir
-    Returns string pointing to save location
-    """
-    root = tk.Tk()
-    root.withdraw()
-    filename = filedialog.asksaveasfilename(**kwargs)
-    root.destroy()
-    return filename
-
 
 def create_config_file():
     """
@@ -106,223 +73,48 @@ def create_config_file():
     Current implementation is stupid-simple and just asks a list of questions
     about known possible sets/data.
     """
-    cli.info("Select a location and filename to save your config file to: ")
-    save_location = save_file(title="Save configuration file", 
+    cli.info("Select a location and file name to save your config file to:")
+    save_location = save_file(title="Save configuration file",
                               filetypes=[("JSON", ".json")])
-    print(save_location+".json")
+    if not save_location:
+        return None
+    save_path = save_location + ".json"
+    print(save_path)
 
-    creation_date = str(datetime.datetime.now())
-    project_name = input("What is the project name? > ")
-    config_id = str(uuid.uuid4()).replace(u"-", u"")
     config_dict = {
-        "config_created_on": creation_date,
-        "project_name": project_name,
-        "config_id": config_id,
+        "config_created_on": str(datetime.datetime.now()),
+        "project_name": input("What is the project name? > "),
+        "config_id": uuid.uuid4().hex,
     }
 
-    # Tuning curve configuration options
-    densetc_confirm = False
-    while not densetc_confirm:
-        densetc_bool = cli.ask_yes_no("Are you doing TC analysis [y/n]? > ")
-        if densetc_bool == "n":
-            config_dict["do_densetc"] = 0
-            densetc_confirm = True
-            break
-        
-        print("What do your file names uniquely start with? \n"
-              "This will associate data files with TC analysis.")
-        cli.note(
-            "eg. For 'DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src', "
-            "type 'DenseTC' (without quotes, case-sensitive)."
-        )
-        densetc_filename = input("> ")
+    for spec in STIM_SPECS:
+        spec.prompt(config_dict)
 
-        cli.info(
-            "\nSelect .csv file containing list of frequencies (Hz) and "
-            "intensities (dB SPL) used."
-        )
-        cli.warn("MUST be Frequency column THEN Intensity column.")
-        cli.info("Each row corresponds to a tone (no headers, just values):")
-
-        try:
-            densetc_df = pd.read_csv(
-                get_file(title="Open DenseTC .csv tone list", 
-                         filetypes=[("CSV", ".csv")]), 
-                header=None, names=["frequency", "intensity"])
-
-            print("\nThe frequencies range from: "
-                  f"{min(densetc_df['frequency'].values)} Hz to "
-                  f"{max(densetc_df['frequency'].values)} Hz."
-                  "\nThe intensities range from: "
-                  f"{min(densetc_df['intensity'].values)} dB to "
-                  f"{max(densetc_df['intensity'].values)} dB")
-            print(f"There are {len(densetc_df)} total tones.")
-            print(f"'{densetc_filename}' will be used to identify your files "
-                  "for tuning curve analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? >")
-            if yes_no == "n":
-                continue
-            densetc_confirm = True
-            config_dict["do_densetc"] = 1
-            config_dict["densetc_file"] = densetc_filename
-            config_dict["densetc_frequency_hz"] = np.unique(
-                densetc_df["frequency"].values).tolist()
-            config_dict["densetc_intensity_db"] = np.unique(
-                densetc_df["intensity"].values).tolist()
-            config_dict["densetc_num_tones"] = len(densetc_df)
-
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # Speech configuration options
-    speech_confirm = False
-    while not speech_confirm:
-        speech_bool = cli.ask_yes_no("Are you doing speech analysis [y/n]? > ")
-        if speech_bool == "n":
-            config_dict["do_speech"] = 0
-            speech_confirm = True
-            break
-        
-        print(
-            "What do your file names uniquely start with? \n"
-            "This will associate data files with speech analysis.\n"
-        )
-        cli.note(
-            "eg. For 'vnsspeech_60dB_RZ5_w5dBdummyPA5#001G_RZ5-1_007.src', "
-            "type 'vnsspeech' (without quotes, case-sensitive)."
-        )
-        speech_filename = input("> ")
-        cli.info(
-            "\nSelect .csv file containing list of speech sounds "
-            "(name/description) and numbers (integers) used."
-        )
-        cli.warn(
-            "MUST be Description column THEN Number column."
-        )
-        cli.info(
-            "Each row corresponds to a sound (no headers, just values):"
-        )
-        try:
-            speech_df = pd.read_csv(
-                get_file(title="Open Speech .csv list",
-                         filetypes=[("CSV", ".csv")]),
-                header=None, names=["speech", "number"])
-
-            print("\n"+speech_df.to_string(index=False))
-            print(f"There are {len(speech_df)} total speech sounds.")
-            print(f"'{speech_filename}' will be used to identify your files "
-                  "for speech analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
-            if yes_no == "n":
-                continue
-            speech_confirm = True
-            config_dict["do_speech"] = 1
-            config_dict["speech_file"] = speech_filename
-            config_dict["speech"] = [{"number": row.number, 
-                                      "speech": row.speech} for row in 
-                                     speech_df.itertuples()]
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # Noiseburst configuration options
-    burst_confirm = False
-    while not burst_confirm:
-        burst_bool = cli.ask_yes_no(
-            "Are you doing noiseburst analysis [y/n]? > "
-        )
-        
-        if burst_bool == "n":
-            config_dict["do_burst"] = 0
-            burst_confirm = True
-            break
-        print(
-            "What do your file names uniquely start with? \n"
-            "This will associate data files with noiseburst analysis.\n"
-        )
-        cli.note(
-            "eg. For 'bb_noise_train#001G1_7.src', "
-            "type 'bb_noise' (without quotes, case-sensitive)."
-        )
-        burst_filename = input("> ")
-
-        cli.info(
-            "\nSelect .csv file containing list of noise-burst ISIs (ms) "
-            "and number of bursts (integers) used."
-        )
-        cli.warn("MUST be ISI column THEN Number column.")
-        cli.info(
-            "Each row corresponds to noise stim (no headers, just values):"
-        )
-        try:
-            burst_df = pd.read_csv(
-                get_file(title="Open noiseburst .csv parameters list",
-                         filetypes=[("CSV", ".csv")]),
-                header=None, names=["ISI", "number"])
-
-            print("\n"+burst_df.to_string(index=False))
-            print(f"\nThere are {len(burst_df)} total noiseburst stimuli.")
-            print(f"\n'{burst_filename}' will be used to identify your files "
-                  "for noiseburst analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
-            if yes_no == "n":
-                continue
-            burst_confirm = True
-            config_dict["do_burst"] = 1
-            config_dict["burst_file"] = burst_filename
-            config_dict["burst"] = [{"ISI_ms": row.ISI, 
-                                     "num_bursts": row.number} for row in 
-                                    burst_df.itertuples()]
-
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # IC mapping configuration
-    ic_confirm = False
-    while not ic_confirm:
-        ic_bool = cli.ask_yes_no(
-            "Will ANY subjects in this project have IC maps [y/n]? > "
-        )
-        if ic_bool == "n":
-            config_dict["do_IC"] = 0
-            ic_confirm = True
-            break
-        cli.note(
-            "\nWhen analyzing subjects in this project, you will be "
-            "prompted to indicate which subjects have IC data."
-            "\nAny subject with IC data requires an additional .csv file "
-            "listing the mapping Penetration numbers associated with IC "
-            "files, and the Depths at those sites."
-            "\nFilenames for any stimulus presented in IC maps are assumed "
-            "to use the same naming pattern as files for Cortical maps.\n\n"
-        )
+    if cli.ask_yes_no("Will this project use any IC maps [y/n]? > "):
         config_dict["do_IC"] = 1
-        ic_confirm = True
-
-    # Save configuration dict to .json file
-    try:
-        with open(save_location+".json", "w") as file:
-            json.dump(config_dict, file, indent=4)
-
-        cli.banner(f"\nSaved config file {save_location+'.json'} !! :)")
-        return config_dict
-
-    except Exception as e:
-        cli.fail(
-            e,
-            "Something went horribly wrong during saving! Why? WHY?! :( :("
+        cli.cprint(
+            "\nWhen analyzing subjects in this project, you will be "
+            "prompted to indicate which subjects have IC data.\n"
+            "Any subject with IC data requires an additional .csv file "
+            "listing the mapping Penetration numbers associated with IC "
+            "files, and the Depths at those sites.\n"
+            "Filenames for any stimulus presented in IC maps are "
+            "assumed to use the same naming pattern as files for "
+            "Cortical maps.\n", 
+            bg=Back.MAGENTA
         )
+    else:
+        config_dict["do_IC"] = 0
+
+    try:
+        with open(save_path, "w") as f:
+            json.dump(config_dict, f, indent=4)
+        cli.banner(f"\nSaved config file {save_path} !! :)")
+        return config_dict
+    except Exception as e:
+        cli.fail(e, "Something went horribly wrong during saving!")
+        return None
+
 
 def pick_voronoi(map_points_df, map_width, map_height):
     """
