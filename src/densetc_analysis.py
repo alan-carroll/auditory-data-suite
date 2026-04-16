@@ -218,7 +218,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     # Update database with map width/height data.
     db_metadata.update_one({"_id": meta_id},
                            {"$set": {"map_height": map_height,
-+                                     "map_width": map_width}})
+                                     "map_width": map_width}})
 
     # Add breathing room to point coordinates so map is easier to display
     # min=0, max=max+(max*0.1), then scale the data in range of 0.1-0.9
