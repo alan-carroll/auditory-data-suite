@@ -327,20 +327,11 @@ class SiteScreen(Screen):
         if st.continuous_bw_idx[0] is None:
             # Manual edits were made without re-running auto-analyze,
             # so continuous BW was never refreshed.
-            result = afunc.ttest_analyze_tuning_curve(model.ttest_tc())
-            st.continuous_bw_idx = result[-2]
+            st.continuous_bw_idx = afunc.ttest_analyze_tuning_curve(
+                model.ttest_tc()).continuous_bw
 
         # Convert indices to physical units
-        bw_khz, bw_oct = {}, {}
-        for lvl in cfg.bw_levels_db:
-            lo, hi = st.bw_idx[lvl]
-            if lo is not None:
-                bw_khz[lvl] = (freqs[[lo, hi]] / 1000).tolist()
-                bw_oct[lvl] = afunc.get_bandwidth(
-                    freqs[lo], freqs[hi]).tolist()
-            else:
-                bw_khz[lvl] = [None, None]
-                bw_oct[lvl] = None
+        bw_khz, bw_oct = afunc.bw_idx_to_units(st.bw_idx, freqs)
 
         try:
             cont_bw_khz = [(freqs[b] / 1000).tolist()
@@ -400,12 +391,11 @@ class SiteScreen(Screen):
         st = model.working
         cfg = model.config
         self.densetc_plot.on_changes_signal.send()
-        _, _, cf, thresh, *bws, continuous_bw, _ = \
-            afunc.ttest_analyze_tuning_curve(model.ttest_tc())
-        st.cf_idx = cf
-        st.thresh_idx = thresh
-        st.bw_idx = dict(zip(cfg.bw_levels_db, bws))
-        st.continuous_bw_idx = continuous_bw
+        r = afunc.ttest_analyze_tuning_curve(model.ttest_tc())
+        st.cf_idx = r.cf
+        st.thresh_idx = r.thresh
+        st.bw_idx = r.bw_idx
+        st.continuous_bw_idx = r.continuous_bw
         self.redraw()
 
     def changes_made(self, *_args, **_kwargs):

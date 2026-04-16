@@ -223,7 +223,7 @@ class SiteModel:
         if self._contour_cache[0] == key:
             return self._contour_cache[1]
 
-        smooth = afunc.ttest_analyze_tuning_curve(self.ttest_tc(*key))[0]
+        smooth = afunc.ttest_analyze_tuning_curve(self.ttest_tc(*key)).tc_image
         smooth[smooth > 0] = 1
 
         self._contour_cache = (key, smooth)
