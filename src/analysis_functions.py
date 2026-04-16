@@ -362,102 +362,69 @@ def build_analysis_metadata(name, comments):
         "frozen": False,
     }    
 
-def get_map_number(filename):
+
+# (electrode_regex, penetration_regex) pairs, tried in order. First pair
+# where both match wins. See get_map_number docstring for the naming
+# conventions each row covers.
+_FILENAME_PATTERNS = {
+    "src": [
+        (r"[0-9]{3}(?=\.src)",   r"(?<=#)[0-9]{3}"),
+        (r"[0-9]{1,3}(?=\.src)", r"[0-9]{3}(?=e)"),
+        (r"[0-9]{1,3}(?=\.src)", r"(?<=_)[0-9]{3}"),
+    ],
+    "f32": [
+        (r"[0-9]{1}(?=\.f32)",   r"[0-9]{3}(?=e)"),
+    ],
+}
+
+# Hardware electrode IDs 7–10 alias to logical channels 1–4.
+_ELECTRODE_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 7: 1, 8: 2, 9: 3, 10: 4}
+
+def _parse_filename(filename):
     """
-    Parses filename for penetration and electrode #'s, then returns map #
-    Assumes common filenaming patterns from our lab's Brainware files:
-      eg. src -> DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src
-          f32 -> naive2dense_001e1.f32
-    Tries a few rarer alternatives for .src naming convention before raising
-    an error on non-conforming filename.
-    
-    (electrode_pattern, penetration_pattern):
-    .src:
-      Standard: (3 #'s then ".src", 3 #'s preceded by "#")
-      f32-style: (1-3 #'s then ".src", 3 #'s followed by "e")
-      f32-style w/ underscore: (1-3 #'s then ".src", 3 #'s preceded by "_")
-    .f32:
-      Standard: (1 # then ".f32", 3 #'s followed by "e")
+    Match `filename` against the known Brainware filenaming conventions.
+    Returns (electrode_int, penetration_int). Raises ValueError if the
+    extension is unrecognized or no pattern pair matches.
+    TODO NB example in CLI project prompts, "bb_noise_train#001G1_7.src",
+    doens't match here -- fix it!
     """
     ext = filename[-3:]
-    if ext == "src":
-        patterns = [
-            ("[0-9]{3}(?=\.src)", "(?<=\#)[0-9]{3}"),
-            ("[0-9]{1,3}(?=\.src)", "[0-9]{3}(?=e)"),
-            ("[0-9]{1,3}(?=\.src)", "(?<=_)[0-9]{3}"),
-            ]
-    elif ext == "f32":
-        patterns = [("[0-9]{1}(?=\.f32)", "[0-9]{3}(?=e)")]
-    else:
-        raise ValueError("Expected file extension of either 'src' or 'f32'"
-                         f"\nGot {ext} from {filename}")
-        
-    found_match = False
-    for (electrode_re, penetration_re) in patterns:
-        try:
-            elec_int = int(re.search(electrode_re, filename).group())
-            pen_num = int(re.search(penetration_re, filename).group())
-            found_match = True
-            break
-        except AttributeError:
-            # No match, try again
-            continue
-    if not found_match:
-        raise AttributeError(f"Can't parse map # from filename {filename}."
-                             "\nFilename did not match any known pattern.")
-    
-    if (elec_int == 7) or (elec_int == 1):
-        elec_num = 1
-    elif (elec_int == 8) or (elec_int == 2):
-        elec_num = 2
-    elif (elec_int == 9) or (elec_int == 3):
-        elec_num = 3
-    elif (elec_int == 10) or (elec_int == 4):
-        elec_num = 4
-    else:
-        raise ValueError("Expected electrode #'s between 1-4 or 7-10. "
-                         f"Found number {elec_int}")
+    if ext not in _FILENAME_PATTERNS:
+        raise ValueError(
+            f"Expected file extension 'src' or 'f32', got {ext!r} "
+            f"from {filename}")
+    for elec_re, pen_re in _FILENAME_PATTERNS[ext]:
+        e = re.search(elec_re, filename)
+        p = re.search(pen_re, filename)
+        if e and p:
+            return int(e.group()), int(p.group())
+    raise ValueError(
+        f"Can't parse {filename!r}: no known naming pattern matched.")
 
-    return ((pen_num - 1) * 4) + elec_num
+
+def get_map_number(filename):
+    """
+    Penetration and electrode -> flat map number, parsed from a Brainware
+    filename. Some known conventions:
+    - DenseTC_..._JRAC#001G_RZ5-1_007.src
+    - foo_001e1.src
+    - foo_001_1.src
+    - naive2dense_001e1.f32
+    """
+    elec_int, pen = _parse_filename(filename)
+    try:
+        elec = _ELECTRODE_MAP[elec_int]
+    except KeyError:
+        raise ValueError(
+            f"Expected electrode # in 1-4 or 7-10, got {elec_int} "
+            f"from {filename}")
+    return (pen - 1) * 4 + elec
 
 
 def get_penetration_number(filename):
-    """
-    Short version of get_map_number(), just returns penetration number. 
-    Useful for IC files.
-    Assumes common filenaming patterns from our lab's Brainware files:
-      eg. src -> DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src
-          f32 -> naive2dense_001e1.f32
-    Tries a few rarer alternatives for .src naming convention before raising
-    an error on non-conforming filename.
-    .src:
-      Standard: 3 #'s preceded by "#"
-      f32-style: 3 #'s followed by "e"
-      f32-style w/ underscore: 3 #'s preceded by "_"
-    .f32:
-      Standard: (1 # then ".f32", 3 #'s followed by "e")
-    """
-    ext = filename[-3:]
-    if ext == "src":
-        patterns = [
-            "(?<=\#)[0-9]{3}", 
-            "[0-9]{3}(?=e)", 
-            "(?<=_)[0-9]{3}",
-            ]
-    elif ext == "f32":
-        patterns = ["[0-9]{3}(?=e)"]
-    else:
-        raise ValueError("Expected file extension of either 'src' or 'f32'"
-                         f"\nGot {ext} from {filename}")
-    for penetration_re in patterns:
-        try:
-            pen_num = int(re.search(penetration_re, filename).group())
-            return pen_num
-        except AttributeError:
-            # No match, try again
-            continue
-    raise AttributeError(f"Can't parse penetration # from filename {filename}."
-                         "\nFilename did not match any known pattern.")
+    """Penetration number parsed from a Brainware filename."""
+    _, pen = _parse_filename(filename)
+    return pen
 
 
 def adjust_numbers(number):
