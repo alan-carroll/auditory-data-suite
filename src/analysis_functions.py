@@ -3,9 +3,9 @@ import itertools
 import json
 import bisect
 import pandas as pd
-#import tkinter as tk
-import mttkinter.mtTkinter as tk
-from tkinter import filedialog, simpledialog, messagebox
+# Re-exported so existing `afunc.get_file(...)` call sites keep working.
+from dialogs import (get_file, get_folder, save_file,
+                     ask_string, confirm, load_analysis)
 import re
 from collections import defaultdict
 import burst_detection as bd
@@ -27,6 +27,8 @@ from scipy.stats import ttest_ind
 from db_adapter import JSONStore
 import cli_utils as cli
 from collections import namedtuple
+from stimulus_specs import STIM_SPECS
+from colorama import Back
 
 # dB-above-threshold levels at which bandwidths are measured. Mirrors
 # StimConfig.bw_levels_db;
@@ -57,41 +59,6 @@ def bw_idx_to_units(bw_idx, freqs_hz):
             octave[lvl] = get_bandwidth(freqs_hz[lo], freqs_hz[hi]).tolist()
     return khz, octave
 
-def get_folder(**kwargs):
-    """
-    Open simple Tk dialog to select a directory.
-    Returns string containing dir path
-    """
-    root = tk.Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory(**kwargs) + "/"
-    root.destroy()
-    return folder
-
-
-def get_file(**kwargs):
-    """
-    Open simple Tk dialog to select a file.
-    Returns string containing dir path + filename
-    """
-    root = tk.Tk()
-    root.withdraw()
-    filename = filedialog.askopenfilename(**kwargs)
-    root.destroy()
-    return filename
-
-
-def save_file(**kwargs):
-    """
-    Open simple Tk dialog to save a filename + dir
-    Returns string pointing to save location
-    """
-    root = tk.Tk()
-    root.withdraw()
-    filename = filedialog.asksaveasfilename(**kwargs)
-    root.destroy()
-    return filename
-
 
 def create_config_file():
     """
@@ -106,223 +73,48 @@ def create_config_file():
     Current implementation is stupid-simple and just asks a list of questions
     about known possible sets/data.
     """
-    cli.info("Select a location and filename to save your config file to: ")
-    save_location = save_file(title="Save configuration file", 
+    cli.info("Select a location and file name to save your config file to:")
+    save_location = save_file(title="Save configuration file",
                               filetypes=[("JSON", ".json")])
-    print(save_location+".json")
+    if not save_location:
+        return None
+    save_path = save_location + ".json"
+    print(save_path)
 
-    creation_date = str(datetime.datetime.now())
-    project_name = input("What is the project name? > ")
-    config_id = str(uuid.uuid4()).replace(u"-", u"")
     config_dict = {
-        "config_created_on": creation_date,
-        "project_name": project_name,
-        "config_id": config_id,
+        "config_created_on": str(datetime.datetime.now()),
+        "project_name": input("What is the project name? > "),
+        "config_id": uuid.uuid4().hex,
     }
 
-    # Tuning curve configuration options
-    densetc_confirm = False
-    while not densetc_confirm:
-        densetc_bool = cli.ask_yes_no("Are you doing TC analysis [y/n]? > ")
-        if densetc_bool == "n":
-            config_dict["do_densetc"] = 0
-            densetc_confirm = True
-            break
-        
-        print("What do your file names uniquely start with? \n"
-              "This will associate data files with TC analysis.")
-        cli.note(
-            "eg. For 'DenseTC_MPK_digitalatten_JRAC#001G_RZ5-1_007.src', "
-            "type 'DenseTC' (without quotes, case-sensitive)."
-        )
-        densetc_filename = input("> ")
+    for spec in STIM_SPECS:
+        spec.prompt(config_dict)
 
-        cli.info(
-            "\nSelect .csv file containing list of frequencies (Hz) and "
-            "intensities (dB SPL) used."
-        )
-        cli.warn("MUST be Frequency column THEN Intensity column.")
-        cli.info("Each row corresponds to a tone (no headers, just values):")
-
-        try:
-            densetc_df = pd.read_csv(
-                get_file(title="Open DenseTC .csv tone list", 
-                         filetypes=[("CSV", ".csv")]), 
-                header=None, names=["frequency", "intensity"])
-
-            print("\nThe frequencies range from: "
-                  f"{min(densetc_df['frequency'].values)} Hz to "
-                  f"{max(densetc_df['frequency'].values)} Hz."
-                  "\nThe intensities range from: "
-                  f"{min(densetc_df['intensity'].values)} dB to "
-                  f"{max(densetc_df['intensity'].values)} dB")
-            print(f"There are {len(densetc_df)} total tones.")
-            print(f"'{densetc_filename}' will be used to identify your files "
-                  "for tuning curve analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? >")
-            if yes_no == "n":
-                continue
-            densetc_confirm = True
-            config_dict["do_densetc"] = 1
-            config_dict["densetc_file"] = densetc_filename
-            config_dict["densetc_frequency_hz"] = np.unique(
-                densetc_df["frequency"].values).tolist()
-            config_dict["densetc_intensity_db"] = np.unique(
-                densetc_df["intensity"].values).tolist()
-            config_dict["densetc_num_tones"] = len(densetc_df)
-
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # Speech configuration options
-    speech_confirm = False
-    while not speech_confirm:
-        speech_bool = cli.ask_yes_no("Are you doing speech analysis [y/n]? > ")
-        if speech_bool == "n":
-            config_dict["do_speech"] = 0
-            speech_confirm = True
-            break
-        
-        print(
-            "What do your file names uniquely start with? \n"
-            "This will associate data files with speech analysis.\n"
-        )
-        cli.note(
-            "eg. For 'vnsspeech_60dB_RZ5_w5dBdummyPA5#001G_RZ5-1_007.src', "
-            "type 'vnsspeech' (without quotes, case-sensitive)."
-        )
-        speech_filename = input("> ")
-        cli.info(
-            "\nSelect .csv file containing list of speech sounds "
-            "(name/description) and numbers (integers) used."
-        )
-        cli.warn(
-            "MUST be Description column THEN Number column."
-        )
-        cli.info(
-            "Each row corresponds to a sound (no headers, just values):"
-        )
-        try:
-            speech_df = pd.read_csv(
-                get_file(title="Open Speech .csv list",
-                         filetypes=[("CSV", ".csv")]),
-                header=None, names=["speech", "number"])
-
-            print("\n"+speech_df.to_string(index=False))
-            print(f"There are {len(speech_df)} total speech sounds.")
-            print(f"'{speech_filename}' will be used to identify your files "
-                  "for speech analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
-            if yes_no == "n":
-                continue
-            speech_confirm = True
-            config_dict["do_speech"] = 1
-            config_dict["speech_file"] = speech_filename
-            config_dict["speech"] = [{"number": row.number, 
-                                      "speech": row.speech} for row in 
-                                     speech_df.itertuples()]
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # Noiseburst configuration options
-    burst_confirm = False
-    while not burst_confirm:
-        burst_bool = cli.ask_yes_no(
-            "Are you doing noiseburst analysis [y/n]? > "
-        )
-        
-        if burst_bool == "n":
-            config_dict["do_burst"] = 0
-            burst_confirm = True
-            break
-        print(
-            "What do your file names uniquely start with? \n"
-            "This will associate data files with noiseburst analysis.\n"
-        )
-        cli.note(
-            "eg. For 'bb_noise_train#001G1_7.src', "
-            "type 'bb_noise' (without quotes, case-sensitive)."
-        )
-        burst_filename = input("> ")
-
-        cli.info(
-            "\nSelect .csv file containing list of noise-burst ISIs (ms) "
-            "and number of bursts (integers) used."
-        )
-        cli.warn("MUST be ISI column THEN Number column.")
-        cli.info(
-            "Each row corresponds to noise stim (no headers, just values):"
-        )
-        try:
-            burst_df = pd.read_csv(
-                get_file(title="Open noiseburst .csv parameters list",
-                         filetypes=[("CSV", ".csv")]),
-                header=None, names=["ISI", "number"])
-
-            print("\n"+burst_df.to_string(index=False))
-            print(f"\nThere are {len(burst_df)} total noiseburst stimuli.")
-            print(f"\n'{burst_filename}' will be used to identify your files "
-                  "for noiseburst analysis.")
-            yes_no = cli.ask_yes_no("\nIs this correct [y/n]? > ")
-            if yes_no == "n":
-                continue
-            burst_confirm = True
-            config_dict["do_burst"] = 1
-            config_dict["burst_file"] = burst_filename
-            config_dict["burst"] = [{"ISI_ms": row.ISI, 
-                                     "num_bursts": row.number} for row in 
-                                    burst_df.itertuples()]
-
-        except Exception as e:
-            cli.fail(
-                e,
-                "*** Selected file caused an error. Double check it is "
-                "correct, or scream into void. ***\n"
-            )
-
-    # IC mapping configuration
-    ic_confirm = False
-    while not ic_confirm:
-        ic_bool = cli.ask_yes_no(
-            "Will ANY subjects in this project have IC maps [y/n]? > "
-        )
-        if ic_bool == "n":
-            config_dict["do_IC"] = 0
-            ic_confirm = True
-            break
-        cli.note(
-            "\nWhen analyzing subjects in this project, you will be "
-            "prompted to indicate which subjects have IC data."
-            "\nAny subject with IC data requires an additional .csv file "
-            "listing the mapping Penetration numbers associated with IC "
-            "files, and the Depths at those sites."
-            "\nFilenames for any stimulus presented in IC maps are assumed "
-            "to use the same naming pattern as files for Cortical maps.\n\n"
-        )
+    if cli.ask_yes_no("Will this project use any IC maps [y/n]? > "):
         config_dict["do_IC"] = 1
-        ic_confirm = True
-
-    # Save configuration dict to .json file
-    try:
-        with open(save_location+".json", "w") as file:
-            json.dump(config_dict, file, indent=4)
-
-        cli.banner(f"\nSaved config file {save_location+'.json'} !! :)")
-        return config_dict
-
-    except Exception as e:
-        cli.fail(
-            e,
-            "Something went horribly wrong during saving! Why? WHY?! :( :("
+        cli.cprint(
+            "\nWhen analyzing subjects in this project, you will be "
+            "prompted to indicate which subjects have IC data.\n"
+            "Any subject with IC data requires an additional .csv file "
+            "listing the mapping Penetration numbers associated with IC "
+            "files, and the Depths at those sites.\n"
+            "Filenames for any stimulus presented in IC maps are "
+            "assumed to use the same naming pattern as files for "
+            "Cortical maps.\n", 
+            bg=Back.MAGENTA
         )
+    else:
+        config_dict["do_IC"] = 0
+
+    try:
+        with open(save_path, "w") as f:
+            json.dump(config_dict, f, indent=4)
+        cli.banner(f"\nSaved config file {save_path} !! :)")
+        return config_dict
+    except Exception as e:
+        cli.fail(e, "Something went horribly wrong during saving!")
+        return None
+
 
 def pick_voronoi(map_points_df, map_width, map_height):
     """
@@ -492,99 +284,6 @@ def get_bandwidth(bw_start, bw_stop):
     return np.log2(bw_stop / bw_start)
 
 
-def load_analysis(analysis_metadata_collection):
-    """
-    Load menu allowing user to choose existing analysis or create a new one.
-    
-    Takes a tinydb "mongo" collection as input.
-    Frozen analyses cannot be loaded from this function.
-    
-    Returns a pandas Series of analysis metadata (or None if user exits menu),
-      and a new_analysis flag (True/False) to indicate if selected analysis 
-      should be loaded or a new analysis created from the selection.
-    """
-    global selected_analysis
-    global new_analysis
-    selected_analysis = None
-    new_analysis = False
-    existing_analyses = pd.DataFrame([entry for entry in 
-                                      analysis_metadata_collection.find({})])
-    choices = {f"{val[0]}: {val[1]}": idx for idx, val in
-               enumerate(existing_analyses[["name", "comments"]].values)}
-
-    root = tk.Tk()
-    root.title("Select Analysis or Create New")
-    mainframe = tk.Frame(root)
-    mainframe.grid(column=0, row=0, stick=(tk.N, tk.W, tk.E, tk.S))
-    mainframe.columnconfigure(0, weight=1)
-    mainframe.rowconfigure(0, weight=1)
-    mainframe.pack(pady=100, padx=100)
-
-    tk_var = tk.StringVar(root)
-    popup_menu = tk.OptionMenu(mainframe, tk_var, *choices)
-    tk.Label(mainframe, 
-             text="Load an existing analysis, or create a new one (select an "
-             "existing analysis to use as a starting template):"
-             ).grid(row=2, column=2)
-    metadata_var = tk.StringVar(root)
-    metadata_var.set("name: \n\nstart_date: \nlast_modified: \n\ncomments: "
-                     "\n\nfrozen: \nid: \n\n")
-    tk.Label(mainframe, textvariable=metadata_var).grid(row=1, column=2)
-    popup_menu.grid(row=3, column=2)
-
-    def change_dropdown(*args):
-        selection = existing_analyses.iloc[choices[tk_var.get()]]
-        metadata_var.set(f"name: {selection['name']}\n\n"
-                         f"start_date: {selection['start_date']}\n"
-                         f"last_modified: {selection['last_modified']}\n\n"
-                         f"comments: {selection['comments']}\n\n"
-                         f"frozen: {selection['frozen']}\n"
-                         f"id: {selection['_id']}\n")
-
-    def select_analysis(*args):
-        global selected_analysis
-        selection = tk_var.get()
-        if not selection:
-            return
-
-        selected_analysis = existing_analyses.iloc[choices[selection]]
-        if selected_analysis['frozen']:
-            selected_analysis = None
-            simpledialog.messagebox.showerror(
-                "Frozen", 
-                "Selected analysis is frozen, and cannot be updated.")
-            return
-        close_window()
-
-    def create_analysis(*args):
-        global selected_analysis
-        global new_analysis
-        selection = tk_var.get()
-        if not selection:
-            return
-
-        selected_analysis = existing_analyses.iloc[choices[selection]]
-        new_analysis = True
-        close_window()
-
-    def close_window(*args):
-        root.quit()
-        root.destroy()
-
-    tk.Button(mainframe, text="Load Selected Analysis", 
-              command=select_analysis).grid(row=4, column=1)
-    tk.Button(mainframe, text="Create New From Selected Analysis", 
-              command=create_analysis).grid(row=4, column=3)
-
-    tk_var.trace("w", change_dropdown)
-
-    root.bind("<Escape>", lambda e: close_window())
-    root.protocol("WM_DELETE_WINDOW", close_window)
-    root.mainloop()
-    
-    return selected_analysis, new_analysis
-
-
 def create_new_densetc_analysis(template_id, new_metadata, 
                                 analysis_metadata_collection, 
                                 densetc_analysis_collection, 
@@ -635,21 +334,17 @@ def new_analysis_metadata_document():
     GUI callers should use build_analysis_metadata() directly with their
     own Kivy-collected inputs instead of calling this.
     """
-    root = tk.Tk()
-    root.withdraw()
-    answer = False
-    while not answer:
-        while (name := simpledialog.askstring(
-            "Input Name", "Who is doing the analysis?")) is None:
+    while True:
+        while (name := ask_string("Input Name",
+                                  "Who is doing the analysis?")) is None:
             continue
-        while (comments := simpledialog.askstring(
-            "Comment", "Write a brief comment about analysis:")) is None:
+        while (comments := ask_string(
+                "Comment", "Write a brief comment about analysis:")) is None:
             continue
-        answer = messagebox.askyesno(
-            "Verify", 
-            f"Is this correct?\nName: {name}\n\nComments: {comments}")
-    root.destroy()
-    return build_analysis_metadata(name, comments)
+        if confirm("Verify",
+                   f"Is this correct?\nName: {name}\n\n"
+                   f"Comments: {comments}"):
+            return build_analysis_metadata(name, comments)
 
 def build_analysis_metadata(name, comments):
     """
@@ -1393,7 +1088,7 @@ def create_final_file(ic_bool=False):
     # just be exporting the template you cloned. Bail with a message if
     # the user tries it.
     analysis_selection, create_new_analysis = \
-        load_analysis(analysis_metadata_collection)
+        load_analysis(analysis_metadata_collection.find({}))
     if analysis_selection is None:
         return
     if create_new_analysis:
