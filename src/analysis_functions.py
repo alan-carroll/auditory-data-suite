@@ -26,7 +26,36 @@ from scipy.spatial import Voronoi
 from scipy.stats import ttest_ind
 from db_adapter import JSONStore
 import cli_utils as cli
+from collections import namedtuple
 
+# dB-above-threshold levels at which bandwidths are measured. Mirrors
+# StimConfig.bw_levels_db;
+# TODO this is just temp solution that'll be subsumed by a more complete refactor
+BW_LEVELS = (10, 20, 30, 40)
+
+TCResult = namedtuple(
+    "TCResult",
+    "tc_image filtered_tc cf thresh bw_idx continuous_bw convex_image"
+)
+
+def bw_idx_to_units(bw_idx, freqs_hz):
+    """
+    Convert {level: [lo_idx, hi_idx]} index pairs into physical units.
+
+    Returns (khz, octave) dicts keyed identically to `bw_idx`.
+    Absent levels ([None, None]) map to [None, None] and None.
+    """
+    freqs_hz = np.asarray(freqs_hz)
+    khz, octave = {}, {}
+    for lvl, idx in bw_idx.items():
+        if idx[0] is None:
+            khz[lvl] = [None, None]
+            octave[lvl] = None
+        else:
+            lo, hi = idx
+            khz[lvl] = (freqs_hz[[lo, hi]] / 1000).tolist()
+            octave[lvl] = get_bandwidth(freqs_hz[lo], freqs_hz[hi]).tolist()
+    return khz, octave
 
 def get_folder(**kwargs):
     """
@@ -419,30 +448,32 @@ def check_csv_points(points_df):
     plt.show()
 
 
+def snap_idx(grid_vals, input_value, allow_zero=True):
+    """
+    Index into `grid_vals` of the entry closest to `input_value`.
+    Same allow_zero convention as snap(); returns None when triggered.
+    """
+    if input_value == 0 and not allow_zero:
+        return None
+    ix = bisect.bisect_right(grid_vals, input_value)
+    if ix == 0:
+        return 0
+    if ix == len(grid_vals):
+        return ix - 1
+    lo, hi = grid_vals[ix - 1], grid_vals[ix]
+    return ix - 1 if abs(lo - input_value) <= abs(hi - input_value) else ix
+
+
 def snap(grid_vals, input_value, allow_zero=True):
     """
-    Useful function to snap any cf, thresh, BW's, freq or int to nearest values 
-      of known input, grid_vals.
-      eg. grid_vals is list of possible frequencies, 
-          input_val is frequency slightly off from grid of possible vals.
-          
     Returns the value in grid_vals that input_value is closest to.
-    
+
     Idiosyncrasy: 'final file' values use 0 to indicate a null value. 
       To deal with this and properly return a null value instead of a snapped 
       value, pass keyword argument allow_zero=False.
-    """
-    if (input_value == 0) and (allow_zero is False):
-        return None
-
-    ix = bisect.bisect_right(grid_vals, input_value)
-    if ix == 0:
-        return grid_vals[0]
-    elif ix == len(grid_vals):
-        return grid_vals[-1]
-    else:
-        return min(grid_vals[ix - 1], grid_vals[ix], 
-                   key=lambda grid_value: abs(grid_value - input_value))
+      """
+    idx = snap_idx(grid_vals, input_value, allow_zero)
+    return None if idx is None else grid_vals[idx]
 
 
 def scale_coordinates(input_coor, min_coor, max_coor, min_scale, max_scale):
@@ -1281,34 +1312,21 @@ def ttest_analyze_tuning_curve(tc_array):
         non_tc_ind = np.where(med_label != [med_regions[big_r].label])
         tc_im_copy[non_tc_ind] = 0
         cf = int(np.argmax(tc_im_copy[med_minr, :]))
-        # Get final_file-style BW's; assign None to any of 10-40 if they exceed
-        # range of intensity.
-        # Using tolist() to make data JSON-serializable
-        # Using convex_image instead of TC to smooth jagged edges of blur and 
-        # produce more consistent contours
         cvx_im = tc_im_copy.copy()
         cvx_im[med_minr:med_maxr, med_minc:med_maxc] = \
             med_regions[big_r].convex_image
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 2, :])
-            bw10 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw10 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 4, :])
-            bw20 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw20 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 6, :])
-            bw30 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw30 = [None, None]
-        try:
-            response_idx = np.where(tc_im_copy[med_minr + 8, :])
-            bw40 = np.array([response_idx[0][0], response_idx[0][-1]]).tolist()
-        except IndexError:
-            bw40 = [None, None]
+
+        # BW at each level: first/last responsive column at the row
+        # `level/5` steps above threshold. Row off the grid → absent.
+        # The /5 assumes 5 dB intensity spacing; 
+        # TODO future PR will wire StimConfig so this becomes cfg.bw_row_offset(lvl).
+        bw_idx = {}
+        for lvl in BW_LEVELS:
+            try:
+                cols = np.where(tc_im_copy[med_minr + lvl // 5, :])[0]
+                bw_idx[lvl] = [int(cols[0]), int(cols[-1])]
+            except IndexError:
+                bw_idx[lvl] = [None, None]
 
         # Get continuous BWs
         cont_bw = []
@@ -1329,18 +1347,16 @@ def ttest_analyze_tuning_curve(tc_array):
         # If latency found, but no region is found (rare/impossible, yes?), 
         # don't assign cf, thresh, or bw's
         thresh = cf = None
-        bw10 = bw20 = bw30 = bw40 = [None, None]
+        bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
         cont_bw = [None]
         tc_im_copy = tc_array  # Just return image (should be empty).
         cvx_im = tc_array
 
     filtered_tc = tc_array.copy()
     filtered_tc[~med_binary] = 0
-    result = (tc_im_copy, filtered_tc, cf, thresh, bw10, bw20, bw30, bw40, 
-              cont_bw, cvx_im)
+    return TCResult(tc_im_copy, filtered_tc, cf, thresh, bw_idx,
+                    cont_bw, cvx_im)
     
-    return result
-
 
 def create_final_file(ic_bool=False):
     """
@@ -1358,6 +1374,9 @@ def create_final_file(ic_bool=False):
     # Initialize length of final-file matrix. Currently 88 from MATLAB vplot
     # style, but arbitrary
     array_length = 88
+
+    # Starting column for each BW triple (a, b, octave) in v-plot layout.
+    BW_FF_COLS = {10: 6, 20: 11, 30: 16, 40: 21}
 
     # Initialize database
     subject_database = JSONStore(db_path)
@@ -1442,45 +1461,18 @@ def create_final_file(ic_bool=False):
         spont = analysis_entry["spont_firing_rate_hz"]
 
         if analysis_entry["cf_idx"] is None:
-            cf = 0
-            thresh = 0
-            a10 = b10 = bw10 = 0
-            a20 = b20 = bw20 = 0
-            a30 = b30 = bw30 = 0
-            a40 = b40 = bw40 = 0
-            onset = offset = peak = 0
-            peak_driven_rate = 0
+            cf = thresh = onset = offset = peak = peak_driven_rate = 0
         else:
             cf = analysis_entry["cf_khz"]
             thresh = analysis_entry["threshold_db"]
-            if analysis_entry["bw10_idx"][0] is not None:
-                bw10_khz = analysis_entry["bw10_khz"]
-                bw10_octave = analysis_entry["bw10_octave"]
-                a10, b10 = bw10_khz
-                bw10 = bw10_octave
-            else:
-                a10 = b10 = bw10 = 0
-            if analysis_entry["bw20_idx"][0] is not None:
-                bw20_khz = analysis_entry["bw20_khz"]
-                bw20_octave = analysis_entry["bw20_octave"]
-                a20, b20 = bw20_khz
-                bw20 = bw20_octave
-            else:
-                a20 = b20 = bw20 = 0
-            if analysis_entry["bw30_idx"][0] is not None:
-                bw30_khz = analysis_entry["bw30_khz"]
-                bw30_octave = analysis_entry["bw30_octave"]
-                a30, b30 = bw30_khz
-                bw30 = bw30_octave
-            else:
-                a30 = b30 = bw30 = 0
-            if analysis_entry["bw40_idx"][0] is not None:
-                bw40_khz = analysis_entry["bw40_khz"]
-                bw40_octave = analysis_entry["bw40_octave"]
-                a40, b40 = bw40_khz
-                bw40 = bw40_octave
-            else:
-                a40 = b40 = bw40 = 0
+            for lvl in BW_LEVELS:
+                if analysis_entry[f"bw{lvl}_idx"][0] is None:
+                    continue  # final_file row is already zero
+                a, b = analysis_entry[f"bw{lvl}_khz"]
+                col = BW_FF_COLS[lvl]
+                final_file[idx, col]     = a
+                final_file[idx, col + 1] = b
+                final_file[idx, col + 2] = analysis_entry[f"bw{lvl}_octave"]
 
             onset = analysis_entry["onset_ms"]
             peak = analysis_entry["peak_ms"]
@@ -1491,18 +1483,6 @@ def create_final_file(ic_bool=False):
         final_file[idx, 0] = file_number
         final_file[idx, 1] = cf
         final_file[idx, 2] = thresh
-        final_file[idx, 6] = a10
-        final_file[idx, 7] = b10
-        final_file[idx, 8] = bw10
-        final_file[idx, 11] = a20
-        final_file[idx, 12] = b20
-        final_file[idx, 13] = bw20
-        final_file[idx, 16] = a30
-        final_file[idx, 17] = b30
-        final_file[idx, 18] = bw30
-        final_file[idx, 21] = a40
-        final_file[idx, 22] = b40
-        final_file[idx, 23] = bw40
         final_file[idx, 25] = onset
         final_file[idx, 26] = peak_driven_rate
         final_file[idx, 33] = peak

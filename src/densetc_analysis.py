@@ -13,6 +13,7 @@ import analysis_functions as afunc
 from functools import partial
 from db_adapter import JSONStore
 import cli_utils as cli
+from analysis_functions import BW_LEVELS, bw_idx_to_units
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
@@ -464,12 +465,10 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
     if latency_dict["peak"] is None:  # Non-responsive site, no analysis needed
         peak_driven_rate = 0
         cf = cf_khz = thresh = thresh_db = None
-        bw10 = bw20 = bw30 = bw40 = [None, None]
-        continuous_bw = [None, None]
-        bw10_octave = bw20_octave = bw30_octave = bw40_octave = None
+        bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
+        bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
+        continuous_bw = continuous_bw_khz = [None, None]
         continuous_bw_octave = None
-        bw10_khz = bw20_khz = bw30_khz = bw40_khz = [None, None]
-        continuous_bw_khz = [None, None]
     elif final_file is not None:
         # Don't measure continuous for analysis pulled from final file
         continuous_bw = [None, None]
@@ -481,58 +480,27 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         else:
             # Snap variable final file analysis values to true values
             # eg. Threshold of 10.7 dB snaps to 10 dB
-            cf_khz = afunc.snap(freqs/1000, row["cf"].values)
-            thresh_db = int(afunc.snap(ints, row["thresh"].values))
-            cf = int(np.where(int(cf_khz*1000) == freqs.astype(int))[0][0])
-            thresh = int(np.where(thresh_db == ints)[0][0])
+            cf = afunc.snap_idx(freqs / 1000, row["cf"].values)
+            cf_khz = freqs[cf] / 1000
+            thresh = afunc.snap_idx(ints, row["thresh"].values)
+            thresh_db = ints[thresh]
             
-        if row["bw10a"].values == 0:
-            bw10 = [None, None]
-            bw10_khz = [None, None]
-            bw10_octave = None
-        else:
-            bw10a = afunc.snap(freqs/1000, row["bw10a"].values)
-            bw10b = afunc.snap(freqs/1000, row["bw10b"].values)
-            bw10 = [int(np.where(int(bw10a*1000) == freqs.astype(int))[0][0]),
-                    int(np.where(int(bw10b*1000) == freqs.astype(int))[0][0])]
-            bw10_khz = [bw10a, bw10b]
-            bw10_octave = row["bw10"].values[0]
-
-        if row["bw20a"].values == 0:
-            bw20 = [None, None]
-            bw20_khz = [None, None]
-            bw20_octave = None
-        else:
-            bw20a = afunc.snap(freqs/1000, row["bw20a"].values)
-            bw20b = afunc.snap(freqs/1000, row["bw20b"].values)
-            bw20 = [int(np.where(int(bw20a*1000) == freqs.astype(int))[0][0]),
-                    int(np.where(int(bw20b*1000) == freqs.astype(int))[0][0])]
-            bw20_khz = [bw20a, bw20b]
-            bw20_octave = row["bw20"].values[0]
-
-        if row["bw30a"].values == 0:
-            bw30 = [None, None]
-            bw30_khz = [None, None]
-            bw30_octave = None
-        else:
-            bw30a = afunc.snap(freqs/1000, row["bw30a"].values)
-            bw30b = afunc.snap(freqs/1000, row["bw30b"].values)
-            bw30 = [int(np.where(int(bw30a*1000) == freqs.astype(int))[0][0]),
-                    int(np.where(int(bw30b*1000) == freqs.astype(int))[0][0])]
-            bw30_khz = [bw30a, bw30b]
-            bw30_octave = row["bw30"].values[0]
-
-        if row["bw40a"].values == 0:
-            bw40 = [None, None]
-            bw40_khz = [None, None]
-            bw40_octave = None
-        else:
-            bw40a = afunc.snap(freqs/1000, row["bw40a"].values)
-            bw40b = afunc.snap(freqs/1000, row["bw40b"].values)
-            bw40 = [int(np.where(int(bw40a*1000) == freqs.astype(int))[0][0]),
-                    int(np.where(int(bw40b*1000) == freqs.astype(int))[0][0])]
-            bw40_khz = [bw40a, bw40b]
-            bw40_octave = row["bw40"].values[0]
+        bw_idx, bw_khz, bw_oct = {}, {}, {}
+        for lvl in BW_LEVELS:
+            a_raw = row[f"bw{lvl}a"].values
+            if a_raw == 0:
+                bw_idx[lvl] = [None, None]
+                bw_khz[lvl] = [None, None]
+                bw_oct[lvl] = None
+                continue
+            a = afunc.snap(freqs / 1000, a_raw)
+            b = afunc.snap(freqs / 1000, row[f"bw{lvl}b"].values)
+            bw_idx[lvl] = [
+                int(np.where(int(a * 1000) == freqs.astype(int))[0][0]),
+                int(np.where(int(b * 1000) == freqs.astype(int))[0][0]),
+            ]
+            bw_khz[lvl] = [a, b]
+            bw_oct[lvl] = row[f"bw{lvl}"].values[0]
         
     else:  # Normal analysis on responsive site
         try:  # Cont BW crashes program if TC doesn't return "good enough" data
@@ -545,35 +513,12 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
                 driven_offset_ms=offset,
                 spont_onset_ms=400 - (offset - onset),
                 spont_offset_ms=400)
-            # TODO check this
             ttest_tc = afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
-            # TODO gross, clean up
-            _, _, cf, thresh, bw10, bw20, bw30, bw40, continuous_bw, _ = afunc.ttest_analyze_tuning_curve(ttest_tc)
-
-            if bw10[0] is not None:
-                bw10_khz = (freqs[bw10] / 1000).tolist()
-                bw10_octave = afunc.get_bandwidth(*freqs[bw10]).tolist()
-            else:
-                bw10_khz = [None, None]
-                bw10_octave = None
-            if bw20[0] is not None:
-                bw20_khz = (freqs[bw20] / 1000).tolist()
-                bw20_octave = afunc.get_bandwidth(*freqs[bw20]).tolist()
-            else:
-                bw20_khz = [None, None]
-                bw20_octave = None
-            if bw30[0] is not None:
-                bw30_khz = (freqs[bw30] / 1000).tolist()
-                bw30_octave = afunc.get_bandwidth(*freqs[bw30]).tolist()
-            else:
-                bw30_khz = [None, None]
-                bw30_octave = None
-            if bw40[0] is not None:
-                bw40_khz = (freqs[bw40] / 1000).tolist()
-                bw40_octave = afunc.get_bandwidth(*freqs[bw40]).tolist()
-            else:
-                bw40_khz = [None, None]
-                bw40_octave = None
+            r = afunc.ttest_analyze_tuning_curve(ttest_tc)
+            cf, thresh = r.cf, r.thresh
+            bw_idx = r.bw_idx
+            bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
+            continuous_bw = r.continuous_bw
 
             continuous_bw_khz = [(freqs[bw] / 1000).tolist() for 
                                  bw in continuous_bw]
@@ -586,12 +531,10 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
             # Still keeps any estimated onset/offset though.. hm.
             peak_driven_rate = 0
             cf = cf_khz = thresh = thresh_db = None
-            bw10 = bw20 = bw30 = bw40 = [None, None]
-            continuous_bw = [None, None]
-            bw10_octave = bw20_octave = bw30_octave = bw40_octave = None
+            bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
+            bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
+            continuous_bw = continuous_bw_khz = [None, None]
             continuous_bw_octave = None
-            bw10_khz = bw20_khz = bw30_khz = bw40_khz = [None, None]
-            continuous_bw_khz = [None, None]
 
     # Apparently sometimes nan's for latency probs?
     # Just in case, nan_to_num: nan's -> 0, and inf's -> large values
@@ -606,18 +549,6 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         "threshold_db": thresh_db, 
         "cf_idx": cf,
         "threshold_idx": thresh,
-        "bw10_khz": bw10_khz, 
-        "bw20_khz": bw20_khz,
-        "bw30_khz": bw30_khz,
-        "bw40_khz": bw40_khz,
-        "bw10_idx": bw10,
-        "bw20_idx": bw20, 
-        "bw30_idx": bw30,
-        "bw40_idx": bw40,
-        "bw10_octave": bw10_octave,
-        "bw20_octave": bw20_octave,
-        "bw30_octave": bw30_octave, 
-        "bw40_octave": bw40_octave,
         "continuous_bw_khz": continuous_bw_khz, 
         "continuous_bw_idx": continuous_bw,
         "continuous_bw_octave": continuous_bw_octave,
@@ -637,6 +568,10 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         "bb_sdf": latency_dict["sdf"].tolist(),
         "field_assignment": "",
     }
+    for lvl in BW_LEVELS:
+        analysis_dict[f"bw{lvl}_idx"] = bw_idx[lvl]
+        analysis_dict[f"bw{lvl}_khz"] = bw_khz[lvl]
+        analysis_dict[f"bw{lvl}_octave"] = bw_oct[lvl]
     return_dict = {"data_dict": bw_dict, 
                    "analysis_dict": analysis_dict, 
                    "penetration_number": bw_dict["penetration_number"]}
