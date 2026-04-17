@@ -19,7 +19,7 @@ from functools import cached_property
 from copy import deepcopy
 import numpy as np
 import pandas as pd
-import analysis_functions as afunc
+import tc_analysis as afunc
 
 
 @dataclass(frozen=True)
