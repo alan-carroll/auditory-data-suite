@@ -551,8 +551,8 @@ class FieldSelectionGUI(BoxLayout):
         self.cf_colormap_dropdown = Spinner(
             text="viridis",
             size_hint=(1, 0.06),
-            values={"viridis", "jet", "plasma", "inferno", "magma", "bone",
-                    "cool", "tab20", "cubehelix", "gist_ncar"})
+            values=("viridis", "jet", "plasma", "inferno", "magma", "bone",
+                    "cool", "tab20", "cubehelix", "gist_ncar"))
         self.heatmap_spinner_label = Label(text="Heatmap\n Colormap", 
                                            color=[0, 0, 0, 1], 
                                            size_hint=(1, 0.06),
@@ -560,8 +560,8 @@ class FieldSelectionGUI(BoxLayout):
         self.heatmap_colormap_dropdown = Spinner(
             text="inferno", 
             size_hint=(1, 0.06), 
-            values={"inferno", "viridis", "plasma", "magma", "ocean", 
-                    "gnuplot2", "cubehelix", "jet", "bone", "gray"})
+            values=("inferno", "viridis", "plasma", "magma", "ocean", 
+                    "gnuplot2", "cubehelix", "jet", "bone", "gray"))
         self.cf_colormap_dropdown.bind(text=self._on_colormap)
         self.heatmap_colormap_dropdown.bind(text=self._on_colormap)
 
