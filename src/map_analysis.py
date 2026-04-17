@@ -10,12 +10,20 @@ from colorama import Fore, Style
 import logging
 import json
 import pandas as pd
+from dataclasses import dataclass, field
 from db_adapter import JSONStore
 import cli_utils as cli
 from dialogs import pump_until
 
 
 logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
+
+
+@dataclass
+class _MenuState:
+    version: str
+    config_dict: dict = field(default_factory=lambda: {"project_name": None})
+    running: bool = True
 
 
 def _pick_map_and_analysis():
@@ -111,95 +119,136 @@ def _ocr_template_tools():
             break
 
 
+def _require_config(state):
+    """Guard for actions that need a loaded project configuration."""
+    if state.config_dict["project_name"] is None:
+        cli.warn("Load a project config file, or create a new one.")
+        return False
+    return True
+
+
+def _action_new_config(state):
+    try:
+        cfg = afunc.create_config_file()
+        if cfg:
+            state.config_dict = cfg
+    except Exception as e:
+        cli.fail(e, "Something went terribly wrong. Scream into void.")
+
+
+def _action_load_config(state):
+    path = afunc.get_file(title="Load Configuration",
+                          filetypes=[("JSON", ".json")])
+    if not path:
+        return
+    try:
+        with open(path) as f:
+            state.config_dict = json.load(f)
+    except Exception as e:
+        cli.fail(e, "Failed to open file. Do better.")
+
+
+def _action_analyze(state):
+    if not _require_config(state):
+        return
+    try:
+        densetc_analysis.run_program(state.config_dict, state.version)
+        cli.banner("\nIt's over! :)\n\n")
+    except Exception as e:
+        cli.fail(e, f"Analysis crashed: {e}\n"
+                    "Traceback in check_after_crash.log.")
+
+
+def _action_generate_from_final(state):
+    if not _require_config(state):
+        return
+    return_sdf = cli.ask_yes_no(
+        "Do you want an SDF calculated for each tuning curve PSTH "
+        "[y/n]? (slower) > "
+    )
+    file = afunc.get_file(title="Select final file",
+                          filetypes=[("XLS", ".xls")])
+    if not file:
+        return
+    try:
+        # Use .xls final file. Uses v-plot format.
+        usecols = [1,2,6,7,8,11,12,13,16,17,18,21,22,23,25,34,40,41,42,43]
+        colnames = ["cf","thresh","bw10a","bw10b","bw10","bw20a","bw20b",
+                    "bw20","bw30a","bw30b","bw30","bw40a","bw40b","bw40",
+                    "onset","offset","x","y","field","number",]
+        map_df = pd.read_excel(file, header=None, usecols=usecols,
+                               names=colnames)
+        densetc_analysis.run_program(state.config_dict, state.version,
+                                     final_file=map_df, return_sdf=return_sdf)
+    except Exception as e:
+        cli.fail(e, f"Final-file generation crashed: {e}\n"
+                    "Traceback in check_after_crash.log.")
+
+
+def _action_ocr_tools(state):
+    try:
+        _ocr_template_tools()
+    except Exception as e:
+        cli.fail(e, f"OCR tool chaos: {e}")
+
+
+def _action_select_fields(state):
+    try:
+        picked = _pick_map_and_analysis()
+    except Exception as e:
+        cli.fail(e, f"Couldn't open that database: {e}")
+        return
+    if picked is not None:
+        _launch_gui(*picked)
+
+
+def _action_exit(state):
+    cli.info("Well fine ... \n")
+    state.running = False
+
+
+# (label, handler) pairs. Label uses [k] to mark the highlighted key
+# letter; _print_menu styles it. Dict order is menu order.
+_ACTIONS = {
+    "n": ("[n]ew configuration file",            _action_new_config),
+    "l": ("[l]oad project configuration",        _action_load_config),
+    "a": ("[a]nalyze subject",                   _action_analyze),
+    "g": ("[g]enerate analysis from final file", _action_generate_from_final),
+    "o": ("[o]cr template tools",                _action_ocr_tools),
+    "s": ("[s]elect fields GUI",                 _action_select_fields),
+    "f": ("[f]inal-file generation",
+          lambda s: afunc.create_final_file()),
+    "i": ("[i]c final-file generation",
+          lambda s: afunc.create_final_file(ic_bool=True)),
+    "x": ("e[x]it program",                      _action_exit),
+}
+
+
+def _print_menu(state):
+    print(Fore.CYAN + Style.BRIGHT)
+    print("----------------------------------------------")
+    print("|                  Alan's                    |")
+    print(f"|            MAPPING ANALYSIS v{state.version}           |")
+    print("|              Wonder Emporium               |")
+    print("|                                            |")
+    print("----------------------------------------------")
+    print()
+    print(f"Configuration loaded: {Fore.GREEN}"
+          f"{state.config_dict['project_name']}{Fore.CYAN}")
+    print()
+    print("Available actions:")
+    for label, _ in _ACTIONS.values():
+        styled = (label.replace("[", f"[{Fore.WHITE}")
+                       .replace("]", f"{Fore.CYAN}]"))
+        print(f" * {styled}")
+    print(Style.RESET_ALL)
+
+
 if __name__ == "__main__":
-    version = "1.0"
-    continue_program = 1
-    config_dict = {"project_name": None}
-    while continue_program:
-        print(Fore.CYAN + Style.BRIGHT)
-        print("----------------------------------------------")
-        print("|                  Alan's                    |")
-        print(f"|            MAPPING ANALYSIS v{version}           |")
-        print("|              Wonder Emporium               |")
-        print("|                                            |")
-        print("----------------------------------------------")
-        print()
-        print(f"Configuration loaded: {Fore.GREEN}"
-              f"{config_dict['project_name']}{Fore.CYAN}")
-        print()
-        print("Available actions:")
-        print(f" * [{Fore.WHITE}n{Fore.CYAN}]ew configuration file")
-        print(f" * [{Fore.WHITE}l{Fore.CYAN}]oad project configuration")
-        print(f" * [{Fore.WHITE}a{Fore.CYAN}]nalyze subject")
-        print(f" * [{Fore.WHITE}g{Fore.CYAN}]enerate analysis from final file")
-        print(f" * [{Fore.WHITE}o{Fore.CYAN}]cr template tools")
-        print(f" * [{Fore.WHITE}s{Fore.CYAN}]elect fields GUI")
-        print(f" * [{Fore.WHITE}f{Fore.CYAN}]inal-file generation")
-        print(f" * [{Fore.WHITE}i{Fore.CYAN}]c final-file generation")
-        print(f" * e[{Fore.WHITE}x{Fore.CYAN}]it program")
-        print(Style.RESET_ALL)
+    state = _MenuState(version="1.0")
+    while state.running:
+        _print_menu(state)
         ch = input("> ").strip().lower()
-        if ch == "l":
-            try:
-                with open(afunc.get_file(title="Load Configuration", 
-                                         filetypes=[("JSON", ".json")])) as f:
-                    config_dict = json.load(f)
-            except Exception as e:
-                cli.fail(e, "Failed to open file. Do better.")
-        if ch == "n":
-            try:
-                if not (config_dict := afunc.create_config_file()):
-                    config_dict = {"project_name": None}
-            except Exception as e:
-                cli.fail(e, "Something went terribly wrong. Scream into void.")
-        if ch == "a":
-            if config_dict["project_name"] is None:
-                cli.warn("Load a project config file, or create a new one.")
-                continue
-            densetc_analysis.run_program(config_dict, version)
-            cli.banner("\nIt's over! :)\n\n")
-        if ch == "g":
-            if config_dict["project_name"] is None:
-                cli.warn("Load a project config file, or create a new one.")
-                continue
-            yes_or_no = cli.ask_yes_no(
-                "Do you want an SDF calculated for each tuning curve PSTH "
-                "[y/n]? (slower) > "
-            )
-            return_sdf = True if yes_or_no == "y" else False
-            file = afunc.get_file(title="Select final file", 
-                                  filetypes=[("XLS", ".xls")])
-             # Use .xls final file. Uses v-plot format.
-            usecols = [1,2,6,7,8,11,12,13,16,17,18,21,22,23,25,34,40,41,42,43]
-            colnames = ["cf","thresh","bw10a","bw10b","bw10","bw20a","bw20b",
-                        "bw20","bw30a","bw30b","bw30","bw40a","bw40b","bw40",
-                        "onset","offset","x","y","field","number",]
-            map_df = pd.read_excel(file, header=None, usecols=usecols, 
-                                   names=colnames)
-            densetc_analysis.run_program(config_dict, version, 
-                                         final_file=map_df,
-                                         return_sdf=return_sdf)
-        if ch == "o":
-            try:
-                _ocr_template_tools()
-            except Exception as e:
-                logging.exception(e)
-                print(Style.BRIGHT + Fore.RED +
-                      f"OCR tool chaos: {e}" +
-                      Style.RESET_ALL)
-        if ch == "f":
-            afunc.create_final_file()
-        if ch == "i":
-            afunc.create_final_file(ic_bool=True)
-        if ch == "s":
-            try:
-                picked = _pick_map_and_analysis()
-            except Exception as e:
-                cli.fail(e, f"Couldn't open that database: {e}")
-                continue
-            if picked is None:
-                continue
-            rc = _launch_gui(*picked)
-        if ch == "x":
-            cli.info("Well fine ... \n")
-            continue_program = 0
+        action = _ACTIONS.get(ch)
+        if action:
+            action[1](state)
