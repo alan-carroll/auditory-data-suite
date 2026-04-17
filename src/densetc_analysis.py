@@ -2,14 +2,12 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
-from neo.io.brainwaresrcio import BrainwareSrcIO
-from neo.io.brainwaref32io import BrainwareF32IO
 import pandas as pd
 from skimage.measure import label, regionprops
 import matplotlib.pyplot as plt
 import datetime
 import bayesian_bins as bb
-import analysis_functions as afunc
+from brainware import read_bw_block, BrainwareSrcIO, BrainwareF32IO
 from functools import partial
 from db_adapter import JSONStore
 import cli_utils as cli
@@ -615,29 +613,7 @@ def burst_bw_loop(idx, file, total, use_f32, ic_pens=()):
     return bw_dict
     
 
-def read_bw_block(file, use_f32, get_spikes, ic_pens=(), prettify_func=None):
-    """
-    Utility func to read Brainware blocks and parse map numbers.
-    Returns dict with metadata and a dataset-specific spiketimes data block.
-    """
-    if use_f32:
-        blk = file.read_block()
-    else:
-        blk = file.read_all_blocks()[0]
-    filename = blk.file_origin
-    penetration_number = afunc.get_penetration_number(filename)
-    map_number = afunc.get_map_number(filename)
-    if penetration_number in ic_pens:
-        num_offset = np.where(ic_pens == penetration_number)[0][0]
-        map_number = map_number - (num_offset * 2)
-    
-    spike_dict = get_spikes(blk)
-    if prettify_func:
-        spike_dict = prettify_func(spike_dict)
-    return {"spiketrains": spike_dict,
-            "filename": filename, 
-            "penetration_number": int(penetration_number), 
-            "number": int(map_number),}
+
 
 
 def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True):

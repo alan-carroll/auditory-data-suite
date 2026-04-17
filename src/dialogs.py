@@ -17,6 +17,11 @@ from contextlib import contextmanager
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox, TclError
 
+__all__ = [
+    "get_file", "get_folder", "save_file", "ask_string", "confirm", 
+    "load_analysis"
+]
+
 # -- internals -------------------------------------------------------------
 
 @contextmanager
