@@ -340,3 +340,13 @@ def ttest_analyze_tuning_curve(tc_array):
     absorbed eventually since it's so simple now
     """
     return _extract_tc_properties(tc_array, tc_array > 0)
+
+# The legacy gaussian/otsu variant is gone. If it's ever needed again:
+#
+#   def analyze_tuning_curve(tc_array):
+#       blurred = gaussian(tc_array, sigma=1.5)
+#       try:
+#           t = threshold_otsu(blurred)
+#       except ValueError:
+#           t = 0
+#       return _extract_tc_properties(blurred, blurred > t)
