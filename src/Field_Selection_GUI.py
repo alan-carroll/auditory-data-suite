@@ -562,8 +562,8 @@ class FieldSelectionGUI(BoxLayout):
             size_hint=(1, 0.06), 
             values={"inferno", "viridis", "plasma", "magma", "ocean", 
                     "gnuplot2", "cubehelix", "jet", "bone", "gray"})
-        self.cf_colormap_dropdown.bind(text=self.on_cf_colormap)
-        self.heatmap_colormap_dropdown.bind(text=self.on_heatmap_colormap)
+        self.cf_colormap_dropdown.bind(text=self._on_colormap)
+        self.heatmap_colormap_dropdown.bind(text=self._on_colormap)
 
         self.toggle = ToggleButton(text="Select", group="paint", 
                                    size_hint=(1, 0.12))
@@ -826,28 +826,20 @@ class FieldSelectionGUI(BoxLayout):
                 name=f"Site {site_number}")
         self.parent.manager.switch_to(self.site_screens[site_number])
 
-    def on_cf_colormap(self, _spinner, value):
-        """Update bubble plot CF colormap using new selection."""
+    def _on_colormap(self, *_):
+        """
+        Shared handler for both colormap spinners. Reads both spinner
+        values directly, so it doesn't matter which one fired the event.
+        """
+        cf_cmap = self.cf_colormap_dropdown.text
+        heatmap_cmap = self.heatmap_colormap_dropdown.text
         for plot in self.plot_dict.values():
-            plot.re_color(cf_cmap=value, 
-                          heatmap_cmap=self.heatmap_colormap_dropdown.text)
+            plot.re_color(cf_cmap=cf_cmap, heatmap_cmap=heatmap_cmap)
             plot.figure_canvas.draw()
         for site in self.site_screens.values():
-            # Do not draw, just update values for each Site
-            site.densetc_plot.re_color(
-                cf_cmap=value, 
-                heatmap_cmap=self.heatmap_colormap_dropdown.text)
-
-    def on_heatmap_colormap(self, _spinner, value):
-        """Update spike heatmap colormap using new selection."""
-        for plot in self.plot_dict.values():
-            plot.re_color(cf_cmap=self.cf_colormap_dropdown.text, 
-                          heatmap_cmap=value)
-            plot.figure_canvas.draw()
-        for site in self.site_screens.values():
-            # Do not draw, just update values for each Site
-            site.densetc_plot.re_color(cf_cmap=self.cf_colormap_dropdown.text,
-                                       heatmap_cmap=value)
+            # Detail plots aren't on screen; update state but skip redraw.
+            site.densetc_plot.re_color(cf_cmap=cf_cmap,
+                                       heatmap_cmap=heatmap_cmap)
 
     def check_mark_or_field(self, _spinner, value):
         """
