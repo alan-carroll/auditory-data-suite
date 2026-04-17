@@ -847,7 +847,7 @@ def _extract_tc_properties(value_image, binary_mask):
         return TCResult(
             tc_image=value_image, cf=None, thresh=None,
             bw_idx={lvl: [None, None] for lvl in BW_LEVELS},
-            continuous_bw=[None])
+            continuous_bw=[])
 
     big = max(regions, key=lambda r: r.area)
     minr, _, maxr, _ = big.bbox

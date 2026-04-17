@@ -13,7 +13,8 @@ import analysis_functions as afunc
 from functools import partial
 from db_adapter import JSONStore
 import cli_utils as cli
-from analysis_functions import BW_LEVELS, bw_idx_to_units
+from analysis_functions import bw_idx_to_units
+from site_model import StimConfig
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
@@ -286,18 +287,15 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
 
     # Tuning curves
     if config_dict["do_densetc"]:
-        freqs = np.array(config_dict["densetc_frequency_hz"])
-        ints = np.array(config_dict["densetc_intensity_db"])
-        
+        stim_cfg = StimConfig.from_project_config(config_dict)
+
         # Parallelize!
         @ray.remote
         def analyze(idx, file):
             return densetc_bw_loop(idx=idx, file=file,
                                    total=len(bw_files["do_densetc"]),
                                    use_f32=use_f32,
-                                   n_sweeps=config_dict["densetc_num_tones"],
-                                   freqs=freqs,
-                                   ints=ints,
+                                   cfg=stim_cfg,
                                    ic_pens=ic_pens,
                                    final_file=final_file,
                                    return_sdf=return_sdf)
@@ -394,10 +392,15 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     db.close()
 
 
-def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints, 
-                    ic_pens=(), final_file=None, return_sdf=True):
+def densetc_bw_loop(idx, file, total, use_f32, cfg, ic_pens=(),
+                    final_file=None, return_sdf=True):
     """
-    Parse DenseTC files and attempt auto-analysis of TCs and latencies.
+    Parse a DenseTC file and attempt auto-analysis of TC and latencies.
+
+    `cfg` is the project StimConfig; sweep length, BW levels, and the
+    frequency / intensity grids all come from it rather than being
+    hard-coded or passed piecemeal.
+
     Returns dict containing:
       data_dict: Raw data from DenseTC file.
         number: map # as id
@@ -410,20 +413,24 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         Too many items to list out here. See end of function ya loon.
       penetration_number: Used for IC depth parsing, if needed.
     """
-    get_spikes = partial(afunc.get_spike_dict, use_f32=use_f32, 
+    freqs = np.asarray(cfg.frequencies_hz)
+    ints = np.asarray(cfg.intensities_db)
+    n_sweeps = cfg.num_tones
+
+    get_spikes = partial(afunc.get_spike_dict, use_f32=use_f32,
                          dataset="densetc")
     prettify_func = partial(afunc.prettify_spike_dict, dataset="densetc")
-    bw_dict = read_bw_block(file, use_f32, get_spikes, ic_pens, 
+    bw_dict = read_bw_block(file, use_f32, get_spikes, ic_pens,
                             prettify_func=prettify_func)
+    map_number = bw_dict["number"]
     print(f"Working on {idx+1} of {total} DenseTC files\n"
-          f"\tMap number is: {bw_dict['number']}")
-    
+          f"\tMap number is: {map_number}")
+
     spike_dict = bw_dict["spiketrains"]
     all_spikes = afunc.get_times_from_spike_dict(spike_dict, is_pretty=True)
-    # TODO fix hard coding of sweep len
-    psth = np.histogram(all_spikes, bins=range(400))[0]
-    spont, spont_std = afunc.get_spont(psth, n_sweeps)
-    
+    psth = np.histogram(all_spikes, bins=range(cfg.sweep_length_ms))[0]
+    spont, _ = afunc.get_spont(psth, n_sweeps)
+
     # Default latency_dict. No alternative latency strategy exists for raw
     # data, but if using a final_file and don't want SDF, these default values
     # make the rest of the program function.
@@ -431,19 +438,18 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         "onset": 50,
         "offset": 300,
         "peak": None,
-        "lats": None, 
+        "lats": None,
         "signal": None,
         "max_prob": None,
-        "total_prob": None, 
+        "total_prob": None,
         "sdf": None,
         "m_priors": None,
         "sigma": None,
-        "gamma": None
-        }
+        "gamma": None,
+    }
     if return_sdf:
         latency_dict = get_densetc_bb_lats(psth, n_sweeps, spont)
     elif final_file is not None:
-        map_number = bw_dict["map_number"]
         row = final_file[final_file["number"] == map_number]
         onset = int(row["onset"].values)
         if not onset:  # Marked as non-responding site in final file
@@ -451,47 +457,41 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         else:
             offset = int(row["offset"].values)
             if not offset:  # TC Explorer couldn't determine offset after onset
-                offset = 399  # End of sweep TODO eliminate hardcoding
+                offset = cfg.sweep_length_ms - 1
             peak = int(np.argmax(psth[onset:offset])) + onset
         latency_dict["onset"] = onset
         latency_dict["peak"] = peak
         latency_dict["offset"] = offset
-    
+
     onset = latency_dict["onset"]
     offset = latency_dict["offset"]
-    peak_driven_rate = afunc.get_peak_driven_rate(psth[onset:offset], spont, 
+    peak_driven_rate = afunc.get_peak_driven_rate(psth[onset:offset], spont,
                                                   n_sweeps)
-    
-    if latency_dict["peak"] is None:  # Non-responsive site, no analysis needed
+
+    # Default to non-responsive; the branches below override when they can
+    # extract real TC properties. Keeps the null-assignment block in one
+    # place instead of three.
+    cf = cf_khz = thresh = thresh_db = None
+    bw_idx = {lvl: [None, None] for lvl in cfg.bw_levels_db}
+    bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
+    continuous_bw = continuous_bw_khz = [None, None]
+    continuous_bw_octave = None
+
+    if latency_dict["peak"] is None:
         peak_driven_rate = 0
-        cf = cf_khz = thresh = thresh_db = None
-        bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
-        bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
-        continuous_bw = continuous_bw_khz = [None, None]
-        continuous_bw_octave = None
+
     elif final_file is not None:
-        # Don't measure continuous for analysis pulled from final file
-        continuous_bw = [None, None]
-        continuous_bw_khz = [None, None]
-        continuous_bw_octave = None
+        # Continuous BW isn't carried in final files, so it stays null.
         row = final_file[final_file["number"] == map_number]
-        if row["cf"].values == 0:  # Non-responsive / unanalyzed site
-            cf = thresh = cf_khz = thresh_db = None
-        else:
-            # Snap variable final file analysis values to true values
-            # eg. Threshold of 10.7 dB snaps to 10 dB
+        if row["cf"].values != 0:
+            # Snap free-form final-file values onto the stimulus grid.
             cf = afunc.snap_idx(freqs / 1000, row["cf"].values)
             cf_khz = freqs[cf] / 1000
             thresh = afunc.snap_idx(ints, row["thresh"].values)
             thresh_db = ints[thresh]
-            
-        bw_idx, bw_khz, bw_oct = {}, {}, {}
-        for lvl in BW_LEVELS:
+        for lvl in cfg.bw_levels_db:
             a_raw = row[f"bw{lvl}a"].values
             if a_raw == 0:
-                bw_idx[lvl] = [None, None]
-                bw_khz[lvl] = [None, None]
-                bw_oct[lvl] = None
                 continue
             a = afunc.snap(freqs / 1000, a_raw)
             b = afunc.snap(freqs / 1000, row[f"bw{lvl}b"].values)
@@ -501,66 +501,57 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
             ]
             bw_khz[lvl] = [a, b]
             bw_oct[lvl] = row[f"bw{lvl}"].values[0]
-        
-    else:  # Normal analysis on responsive site
-        try:  # Cont BW crashes program if TC doesn't return "good enough" data
-            tc_df = afunc.get_tuning_curve_dataframe(
-                pd.DataFrame(spike_dict))
-            # TODO Fix hardcoding sweep len
-            ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
-                tc_df, 
-                driven_onset_ms=onset, 
-                driven_offset_ms=offset,
-                spont_onset_ms=400 - (offset - onset),
-                spont_offset_ms=400)
-            ttest_tc = afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
-            r = afunc.ttest_analyze_tuning_curve(ttest_tc)
+
+    else:
+        tc_df = afunc.get_tuning_curve_dataframe(pd.DataFrame(spike_dict))
+        spont_on, spont_off = cfg.spont_window(onset, offset)
+        ttest_spike_counts = afunc.get_driven_vs_spont_spike_counts(
+            tc_df,
+            driven_onset_ms=onset, driven_offset_ms=offset,
+            spont_onset_ms=spont_on, spont_offset_ms=spont_off)
+        ttest_tc = afunc.ttest_driven_vs_spont_tc(*ttest_spike_counts)
+        r = afunc.ttest_analyze_tuning_curve(ttest_tc)
+        if r.cf is None:
+            # No driven region found; leave null defaults in place but
+            # keep whatever onset/offset the latency estimator produced.
+            peak_driven_rate = 0
+        else:
             cf, thresh = r.cf, r.thresh
+            cf_khz = freqs[cf] / 1000
+            thresh_db = ints[thresh].tolist()
             bw_idx = r.bw_idx
             bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
             continuous_bw = r.continuous_bw
-
-            continuous_bw_khz = [(freqs[bw] / 1000).tolist() for 
-                                 bw in continuous_bw]
-            continuous_bw_octave = [afunc.get_bandwidth(*freqs[bw]).tolist() 
+            continuous_bw_khz = [(freqs[bw] / 1000).tolist()
+                                 for bw in continuous_bw]
+            continuous_bw_octave = [afunc.get_bandwidth(*freqs[bw]).tolist()
                                     for bw in continuous_bw]
-            cf_khz = freqs[cf] / 1000
-            thresh_db = ints[thresh].tolist()
-        except TypeError:  # Cont BW called without a bw_stop argument
-            # If site is that bad, just treat as non-responsive
-            # Still keeps any estimated onset/offset though.. hm.
-            peak_driven_rate = 0
-            cf = cf_khz = thresh = thresh_db = None
-            bw_idx = {lvl: [None, None] for lvl in BW_LEVELS}
-            bw_khz, bw_oct = bw_idx_to_units(bw_idx, freqs)
-            continuous_bw = continuous_bw_khz = [None, None]
-            continuous_bw_octave = None
 
     # Apparently sometimes nan's for latency probs?
     # Just in case, nan_to_num: nan's -> 0, and inf's -> large values
     latency_dict["lats"] = np.nan_to_num(latency_dict["lats"])
     latency_dict["total_prob"] = np.nan_to_num(latency_dict["total_prob"])
     latency_dict["max_prob"] = np.nan_to_num(latency_dict["max_prob"])
-    
+
     analysis_dict = {
-        "number": bw_dict["number"],
+        "number": map_number,
         "penetration_number": bw_dict["penetration_number"],
-        "cf_khz": cf_khz, 
-        "threshold_db": thresh_db, 
+        "cf_khz": cf_khz,
+        "threshold_db": thresh_db,
         "cf_idx": cf,
         "threshold_idx": thresh,
-        "continuous_bw_khz": continuous_bw_khz, 
+        "continuous_bw_khz": continuous_bw_khz,
         "continuous_bw_idx": continuous_bw,
         "continuous_bw_octave": continuous_bw_octave,
-        "onset_ms": onset, 
-        "peak_ms": latency_dict["peak"], 
+        "onset_ms": onset,
+        "peak_ms": latency_dict["peak"],
         "offset_ms": offset,
-        "psth": psth.tolist(), 
+        "psth": psth.tolist(),
         "peak_driven_rate_hz": peak_driven_rate,
         "spont_firing_rate_hz": spont,
         "m_probs": latency_dict["m_priors"].tolist(),
         "bb_signal": latency_dict["signal"],
-        "sigma": latency_dict["sigma"], 
+        "sigma": latency_dict["sigma"],
         "gamma": latency_dict["gamma"],
         "latency_array": latency_dict["lats"].tolist(),
         "bb_latency_prob": latency_dict["max_prob"],
@@ -568,15 +559,14 @@ def densetc_bw_loop(idx, file, total, use_f32, n_sweeps, freqs, ints,
         "bb_sdf": latency_dict["sdf"].tolist(),
         "field_assignment": "",
     }
-    for lvl in BW_LEVELS:
+    for lvl in cfg.bw_levels_db:
         analysis_dict[f"bw{lvl}_idx"] = bw_idx[lvl]
         analysis_dict[f"bw{lvl}_khz"] = bw_khz[lvl]
         analysis_dict[f"bw{lvl}_octave"] = bw_oct[lvl]
-    return_dict = {"data_dict": bw_dict, 
-                   "analysis_dict": analysis_dict, 
-                   "penetration_number": bw_dict["penetration_number"]}
 
-    return return_dict
+    return {"data_dict": bw_dict,
+            "analysis_dict": analysis_dict,
+            "penetration_number": bw_dict["penetration_number"]}
 
 
 def speech_bw_loop(idx, file, total, use_f32, ic_pens=()):
@@ -724,7 +714,7 @@ def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True):
                 else:  # No sequences pass, use last potential offset (rare)
                     offset = int(offset_seqs[-1][0] + offsets[0] + onset)
             else:  # Never returns to mean-levels, use first offset (rare)
-                offset = int(offsets[0])
+                offset = int(offsets[0] + onset)
         else:  # No major deflections after onset, default to 300 (rare)
             offset = 300
 

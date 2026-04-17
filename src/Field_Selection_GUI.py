@@ -324,7 +324,7 @@ class SiteScreen(Screen):
         self.reset_button.disabled = True
         self.reset_button.background_color = [0.25, 0.05, 0.1, 1]
 
-        if st.continuous_bw_idx[0] is None:
+        if not st.continuous_bw_idx or st.continuous_bw_idx[0] is None:
             # Manual edits were made without re-running auto-analyze,
             # so continuous BW was never refreshed.
             st.continuous_bw_idx = afunc.ttest_analyze_tuning_curve(
