@@ -22,6 +22,19 @@ def scale_coordinates(input_coor, min_coor, max_coor, min_scale, max_scale):
     return ((max_scale - min_scale) * (input_coor - min_coor) / 
             (max_coor - min_coor)) + min_scale
 
+
+def boundary_polygon(shape):
+    """
+    Normalize alpha-shape output to a single polygon for perimeter buffering.
+    """
+    if shape.geom_type == "Polygon":
+        return shape
+
+    if shape.geom_type == "MultiPolygon":
+        return max(shape.geoms, key=lambda geom: geom.area)
+
+    return shape.convex_hull
+
 def alpha_shape(points, alpha):
     """
     Utility for pick_voronoi().
@@ -36,8 +49,7 @@ def alpha_shape(points, alpha):
       and you lose everything!
     """
     if len(points) < 4:
-        # If triangle, there is no sense in computing an alpha shape.
-        return geometry.MultiPoint(list(points)).convex_hull
+        return geometry.MultiPoint(list(points)).convex_hull, []
 
     def add_edge(edges, edge_points, coords, i, j):
         if (i, j) in edges or (j, i) in edges:
@@ -49,7 +61,7 @@ def alpha_shape(points, alpha):
     tri = Delaunay(coords)
     edges = set()
     edge_points = []
-    for ia, ib, ic in tri.vertices:
+    for ia, ib, ic in tri.simplices:
         pa = coords[ia]
         pb = coords[ib]
         pc = coords[ic]
@@ -76,8 +88,6 @@ def pick_voronoi(map_points_df, map_width, map_height):
     """
     Generate Voronoi tessellation for map and store data.
 
-    Uses Shapely for geometry -- https://shapely.readthedocs.io/en/latest/
-
     Creates extended border around original map points to eliminate voronoi 
     cells going to infinity. Newly created points are buffered away from 
     existing border points by the average edge length between border points.
@@ -89,7 +99,8 @@ def pick_voronoi(map_points_df, map_width, map_height):
     shape_pts = [Point(pnt) for pnt in base_pts]
     
     # alpha=5 for relaxed boundaries, 10 for tighter
-    concave_hull, edge_points = alpha_shape(shape_pts, alpha=8)
+    concave_hull, _ = alpha_shape(shape_pts, alpha=8)
+    concave_hull = boundary_polygon(concave_hull)
 
     # 3 = Square cap; 3 = Bevel join
     perimeter_length = concave_hull.exterior.length
@@ -100,7 +111,7 @@ def pick_voronoi(map_points_df, map_width, map_height):
                                          join_style=3)
     bonus_pts = np.array([[x, y] for x, y in bonus.exterior.coords])
 
-    # Use vispy-based voronoi program to pick additional border points
+    # Use the interactive Voronoi picker to refine additional border points.
     cli.note(
         "Add additional border points to voronoi diagram as necessary."
         "\nLeft-click adds a point."

@@ -116,6 +116,10 @@ In auditory cortical maps, each point on the cortical surface is assumed to have
 Typically, additional border points need to be manually added to further constrain the shape of the outer polygons. The goal is to create as uniform an area around each point as possible (matching the relative size of inner polygons), such that each electrode penetration (black dots) represents a roughly equal sample of cortical area. While I find this shaping process fun, a simple pass constraining the most egregious outer borders is sufficient.
 ![Voronoi tessellation after manually adding more border points](resources/img/demo_postvor.png)
 
+If you just want to test the boundary picker without running a full analysis, use:
+- `python demo/voronoi_picker_demo.py`
+- `python demo/voronoi_picker_demo.py path/to/coords.csv`
+
 ### Analysis
 Finally, select the dir containing either the `.src` or `.f32` files for the subject.
 
