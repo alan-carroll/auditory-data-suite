@@ -5,7 +5,7 @@ import os
 import sys
 import subprocess
 import analysis_functions as afunc
-import densetc_analysis
+import subject_analysis
 from colorama import Fore, Style
 import logging
 import json
@@ -152,7 +152,7 @@ def _action_analyze(state):
     if not _require_config(state):
         return
     try:
-        densetc_analysis.run_program(state.config_dict, state.version)
+        subject_analysis.run_program(state.config_dict, state.version)
         cli.banner("\nIt's over! :)\n\n")
     except Exception as e:
         cli.fail(e, f"Analysis crashed: {e}\n"
@@ -178,7 +178,7 @@ def _action_generate_from_final(state):
                     "onset","offset","x","y","field","number",]
         map_df = pd.read_excel(file, header=None, usecols=usecols,
                                names=colnames)
-        densetc_analysis.run_program(state.config_dict, state.version,
+        subject_analysis.run_program(state.config_dict, state.version,
                                      final_file=map_df, return_sdf=return_sdf)
     except Exception as e:
         cli.fail(e, f"Final-file generation crashed: {e}\n"

@@ -6,7 +6,7 @@ from colorama import Back
 
 import cli_utils as cli
 from dialogs import save_file, ask_string, confirm
-from stimulus_specs import STIM_SPECS
+from stim_types import ALL_STIM_TYPES
 
 __all__ = [
     "create_config_file",
@@ -41,8 +41,8 @@ def create_config_file():
         "config_id": uuid.uuid4().hex,
     }
 
-    for spec in STIM_SPECS:
-        spec.prompt(config_dict)
+    for stim in ALL_STIM_TYPES:
+        stim.prompt(config_dict)
 
     if cli.ask_yes_no("Will this project use any IC maps [y/n]? > "):
         config_dict["do_IC"] = 1

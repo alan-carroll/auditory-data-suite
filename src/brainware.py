@@ -211,26 +211,27 @@ def check_sweeps(sweep):
     else:
         return sweep
     
-def read_bw_block(file, use_f32, get_spikes, ic_pens=(), prettify_func=None):
+def read_bw_block(file, use_f32, dataset, ic_pens=()):
     """
-    Utility func to read Brainware blocks and parse map numbers.
-    Returns dict with metadata and a dataset-specific spiketimes data block.
+    Read one neo Brainware block and return its spiketrains plus the
+    map / penetration numbers parsed from the filename.
+
+    IC penetrations get a collapsed map-numbering (2 electrodes per
+    penetration rather than 4), offset by the penetration's position
+    in `ic_pens`.
     """
-    if use_f32:
-        blk = file.read_block()
-    else:
-        blk = file.read_all_blocks()[0]
+    blk = file.read_block() if use_f32 else file.read_all_blocks()[0]
     filename = blk.file_origin
-    penetration_number = get_penetration_number(filename)
+    pen = get_penetration_number(filename)
     map_number = get_map_number(filename)
-    if penetration_number in ic_pens:
-        num_offset = np.where(ic_pens == penetration_number)[0][0]
-        map_number = map_number - (num_offset * 2)
-    
-    spike_dict = get_spikes(blk)
-    if prettify_func:
-        spike_dict = prettify_func(spike_dict)
-    return {"spiketrains": spike_dict,
-            "filename": filename, 
-            "penetration_number": int(penetration_number), 
-            "number": int(map_number),}
+    if pen in ic_pens:
+        offset = np.where(ic_pens == pen)[0][0]
+        map_number -= offset * 2
+
+    spikes = prettify_spike_dict(
+        get_spike_dict(blk, use_f32=use_f32, dataset=dataset),
+        dataset=dataset)
+    return {"spiketrains": spikes,
+            "filename": filename,
+            "penetration_number": int(pen),
+            "number": int(map_number)}
