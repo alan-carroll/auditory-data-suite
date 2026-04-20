@@ -37,7 +37,6 @@ import logging
 from kivy.uix.slider import Slider
 import analysis_functions as afunc
 import blinker
-from sklearn.preprocessing import minmax_scale
 from collections import namedtuple
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
@@ -1554,7 +1553,10 @@ class SitePlot(RelativeLayout):
         self.row = self.col = self.val = np.array([])
 
         self.fig = Figure()
-        self.ax = self.fig.subplots(2, 1)
+        self.ax = [
+            self.fig.add_axes([0.125, 0.495, 0.775, 0.385]),
+            self.fig.add_axes([0.125, 0.11, 0.775, 0.385]),
+        ]
 
         # Aesthetics
         self.fig.patch.set_alpha(0)
@@ -1633,11 +1635,13 @@ class SitePlot(RelativeLayout):
         (otherwise the lowest spike count maps to size 0). Returns the
         input unchanged if it's empty.
         """
-        try:
-            return minmax_scale(list(vals) + [0],
-                                feature_range=(0, max_size))[:-1]
-        except TypeError:
+        vals = np.asarray(vals, dtype=float)
+        if vals.size == 0:
             return vals
+        vmax = vals.max(initial=0)
+        if vmax <= 0:
+            return np.zeros_like(vals, dtype=float)
+        return vals * (max_size / vmax)
     
     # -- full renders ---------------------------------------------------
     def re_plot(self, axis_visible="off", min_y=None):
@@ -1667,7 +1671,8 @@ class SitePlot(RelativeLayout):
         self.row, self.col = np.where(tc > 0)
         self.val = tc[self.row, self.col]
 
-        ax.clear()
+        if self._has_render:
+            ax.clear()
         scaled = self._scale_sizes(self.val, self.max_bubble_size)
         self.bubble = ax.scatter(x=self.col, y=self.row, s=scaled ** 2,
                                  edgecolors="black", lw=0.5,
@@ -1756,14 +1761,16 @@ class SitePlot(RelativeLayout):
         sweep = cfg.sweep_length_ms
         bin_size = self.bin_size
 
-        ax.clear()
+        if self._has_render:
+            ax.clear()
         if bin_size in (1, 5):
             num_bins = round((sweep - 1) / bin_size)
-            binned = np.histogram(range(len(raw)), bins=num_bins,
-                                  weights=raw)[0]
+            binned, bin_edges = np.histogram(
+                range(len(raw)), bins=num_bins, weights=raw)
         else:
             binned = raw
             num_bins = len(binned)
+            bin_edges = np.arange(num_bins + 1)
 
         hist_peak = int(np.argmax(binned))
         # Quick visual peak rate (not the driven rate), and it changes
@@ -1772,10 +1779,15 @@ class SitePlot(RelativeLayout):
         ms_mult = 1000 // bin_size
         peak_rate = int(round((binned[hist_peak] * ms_mult) / cfg.num_tones))
 
-        self.psth = ax.hist(range(len(raw)), weights=raw, bins=num_bins,
-                            alpha=1, color=self.lat_color,
-                            edgecolor="#fdfdfe", lw=0.4,
-                            histtype="stepfilled")
+        self.psth = ax.stairs(
+            binned,
+            bin_edges,
+            baseline=0,
+            fill=True,
+            color=self.lat_color,
+            edgecolor="#fdfdfe",
+            linewidth=0.4,
+        )
 
         if self.detailed_plot:
             self.sdf_line = ax.plot(

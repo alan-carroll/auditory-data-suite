@@ -6,8 +6,8 @@ view hold a reference to the same model, so building the tuning curve
 DataFrame happens once per site instead of once per widget.
 
 Caching policy:
-  - tuning_curve_df is the only cached_property. It's built from raw
-    spiketrains; nothing the user does can change it.
+  - tuning_curve_df / tuning_curve_grid are cached_properties built
+    from raw spiketrains; nothing the user does can change them.
   - raw_tc / ttest_tc / contour_tc are functions of (onset, offset).
     Each carries a one-slot memo keyed on that pair, so toggling display
     mode or picking CF (redraws that don't touch latencies) are cache
@@ -163,6 +163,39 @@ class SiteModel:
         site_df = pd.DataFrame(self._data_doc["spiketrains"])
         return afunc.get_tuning_curve_dataframe(site_df)
 
+    @cached_property
+    def tuning_curve_grid(self):
+        """
+        Object array of spike-time arrays ordered as
+        [intensity_idx, frequency_idx]. This avoids pandas object-cell
+        traversal in hot rendering paths such as raw_tc().
+        """
+        cfg = self.config
+        grid = np.empty((cfg.num_intensity, cfg.num_frequency), dtype=object)
+        grid.fill(None)
+
+        for stim in self._data_doc["spiketrains"]:
+            try:
+                row = afunc.snap_idx(cfg.intensities_db, stim["intensity_db"])
+                col = afunc.snap_idx(cfg.frequencies_hz, stim["frequency_hz"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            grid[row, col] = np.asarray(afunc.check_sweeps(stim["spikes_ms"]))
+        return grid
+
+    @staticmethod
+    def _spont_subtracted_count(spikes, on, off, s_on, s_off):
+        if spikes is None:
+            return 0
+        spikes = np.asarray(spikes)
+        if spikes.size == 0 or np.any(np.isnan(spikes)):
+            return 0
+
+        driven = np.count_nonzero((on <= spikes) & (spikes <= off))
+        spont = np.count_nonzero((s_on <= spikes) & (spikes <= s_off))
+        diff = driven - spont
+        return diff if diff > 0 else 0
+
     def _window(self, onset, offset):
         on = self.working.onset if onset is None else onset
         off = self.working.offset if offset is None else offset
@@ -189,13 +222,15 @@ class SiteModel:
 
         on, off = key
         s_on, s_off = self.config.spont_window(on, off)
-        def per_cell(x):
-            if x is None or np.any(np.isnan(x)):
-                return 0
-            return afunc.remove_spont(
-                x, driven_onset_ms=on, driven_offset_ms=off,
-                spont_onset_ms=s_on, spont_offset_ms=s_off)
-        arr = np.asarray(self.tuning_curve_df.map(per_cell), dtype=np.uint16)
+        counts = np.fromiter(
+            (
+                self._spont_subtracted_count(spikes, on, off, s_on, s_off)
+                for spikes in self.tuning_curve_grid.flat
+            ),
+            dtype=np.uint16,
+            count=self.tuning_curve_grid.size,
+        )
+        arr = counts.reshape(self.tuning_curve_grid.shape)
 
         self._raw_tc_cache = (key, arr)
         return arr
