@@ -13,7 +13,6 @@ matplotlib.use("Agg")
 from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
-import matplotlib.pyplot as plt
 # Pip-installable replacement for the legacy `garden install matplotlib` flower.
 # Aliased so the rest of the module doesn't need to change.
 from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg as FigureCanvas
@@ -41,6 +40,7 @@ import blinker
 from sklearn.preprocessing import minmax_scale
 from collections import namedtuple
 from matplotlib.collections import LineCollection
+from matplotlib.figure import Figure
 import warnings
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
 from db_adapter import JSONStore
@@ -50,7 +50,7 @@ from site_model import SiteModel, StimConfig
 # issued by matplotlib
 warnings.filterwarnings("ignore", module="matplotlib")
 warnings.filterwarnings("ignore", message="No contour levels were found within the data range.")
-plt.rcParams.update({'figure.max_open_warning': 0})
+matplotlib.rcParams.update({'figure.max_open_warning': 0})
 matplotlib_axes_logger.setLevel('ERROR')
 
 logging.basicConfig(filename="map_gui_log.log", filemode="w")
@@ -226,9 +226,7 @@ class SiteScreen(Screen):
         self.tools_layout.add_widget(bubble_slider_layout)
         self.tools_layout.add_widget(options_layout)
 
-        # Initialize default bubble plot
         densetc_plot.max_bubble_size = 30
-        densetc_plot.bubble_plot(axis_visible="on")
         self.densetc_plot = densetc_plot
         if self.densetc_plot.model.working.marked:
             self.mark_site_toggle.state = "down"
@@ -244,7 +242,7 @@ class SiteScreen(Screen):
     def redraw(self):
         """Re-draw plots."""
         self.densetc_plot.re_plot(axis_visible="on")
-        self.densetc_plot.figure_canvas.draw()
+        self.densetc_plot.draw_canvas()
 
     def _on_plot_flag_checkbox(self, checkbox, checked):
         """
@@ -290,7 +288,6 @@ class SiteScreen(Screen):
     def change_bin_size(self, _spinner, value):
         """Show PSTH with 1 or 5 ms bin size."""
         self.densetc_plot.bin_size = 5 if value == "5 ms" else 1
-        self.densetc_plot.psth_plot()
         self.redraw()
 
     def pick_cf(self, _event):
@@ -430,17 +427,12 @@ class SiteScreen(Screen):
             unsaved_changes=self.unsaved_changes,
             marked=self.densetc_plot.model.working.marked)
         self.densetc_plot.active = False
-        self.densetc_plot.fig.clf()
         self.manager.switch_to(self.gui_instance.parent)
 
     def on_pre_enter(self, *args):
         """Ready Site plots prior to switching GUI screens."""
         self.densetc_plot.active = True
-        self.densetc_plot.fig.clf()
-        self.densetc_plot.ax[0] = self.densetc_plot.fig.add_subplot(2, 1, 1)
-        self.densetc_plot.ax[1] = self.densetc_plot.fig.add_subplot(2, 1, 2)
-        self.densetc_plot.re_plot(axis_visible="on")
-        self.densetc_plot.figure_canvas.draw()
+        self.densetc_plot.ensure_rendered(axis_visible="on")
 
 
 class FieldSelectionGUI(BoxLayout):
@@ -840,6 +832,7 @@ class FieldSelectionGUI(BoxLayout):
             # Detail plots aren't on screen; update state but skip redraw.
             site.densetc_plot.re_color(cf_cmap=cf_cmap,
                                        heatmap_cmap=heatmap_cmap)
+            site.densetc_plot.mark_dirty()
 
     def check_mark_or_field(self, _spinner, value):
         """
@@ -1560,16 +1553,20 @@ class SitePlot(RelativeLayout):
         # rescale without refetching the array.
         self.row = self.col = self.val = np.array([])
 
-        # Generate bubble plot and psth
-        self.fig, self.ax = plt.subplots(2, 1)
+        self.fig = Figure()
+        self.ax = self.fig.subplots(2, 1)
 
         # Aesthetics
         self.fig.patch.set_alpha(0)
         self.fig.subplots_adjust(wspace=0, hspace=0)
+        self._has_render = False
+        self._needs_redraw = detailed_plot
         
         if not detailed_plot:
             self.bubble_plot()
             self.psth_plot()
+            self._has_render = True
+            self._needs_redraw = False
         else:
             self.ax[0].axis("off")
             self.ax[1].axis("off")
@@ -1586,6 +1583,20 @@ class SitePlot(RelativeLayout):
                                     self.mouse_release_event)
 
         self.add_widget(self.figure_canvas)
+
+    def mark_dirty(self):
+        """Queue a full redraw for the next time the plot is shown."""
+        self._needs_redraw = True
+
+    def draw_canvas(self):
+        self.figure_canvas.draw()
+        self._has_render = True
+        self._needs_redraw = False
+
+    def ensure_rendered(self, axis_visible="off", min_y=None):
+        if self._needs_redraw or not self._has_render:
+            self.re_plot(axis_visible=axis_visible, min_y=min_y)
+            self.draw_canvas()
 
     # -- shortcuts ------------------------------------------------------
     @property
@@ -1705,7 +1716,7 @@ class SitePlot(RelativeLayout):
 
     def _draw_tc_overlays(self, ax, contour_color=None):
         """
-        DCF marker, BW lines/markers, and contour on top of whichever TC
+        CF marker, BW lines/markers, and contour on top of whichever TC
         rendering just populated `ax`. Dark-background renderings pass
         a white contour_color; None uses matplotlib's default cycle.
         """
