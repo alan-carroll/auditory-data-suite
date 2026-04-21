@@ -100,24 +100,33 @@ def _launch_gui(db_path, analysis_id, is_ic):
 
 
 def _ocr_template_tools():
-    # TODO
-    print("Not yet implemented.")
-    return
+    def _bootstrap_templates():
+        subject_analysis.bootstrap_digit_templates()
+
+    def _preview_templates():
+        source_path = subject_analysis.prompt_digit_ocr_source()
+        if source_path is None:
+            cli.warn("Preview canceled before choosing an OCR source.")
+            return
+
+        cli.info(f"Previewing {source_path}:")
+        ocr = subject_analysis.load_digit_ocr(source_path)
+        ocr.print_summary()
+        ocr.preview_templates()
 
     while True:
         print(Fore.CYAN + Style.BRIGHT)
         print("\nOCR template tools:")
-        print(f" * [{Fore.WHITE}b{Fore.CYAN}]ootstrap new template set")
-        print(f" * [{Fore.WHITE}p{Fore.CYAN}]review template set")
-        print(f" * e[{Fore.WHITE}x{Fore.CYAN}]it OCR tools")
+        print(_style_menu_option("[b]ootstrap new template set"))
+        print(_style_menu_option("[p]review template set"))
+        print(_style_menu_option("e[x]it OCR tools"))
         print(Style.RESET_ALL)
 
-        # TODO finish implementing
         ch = input("> ").strip().lower()
         if ch == "b":
-            pass
+            _bootstrap_templates()
         elif ch == "p":
-            pass
+            _preview_templates()
         elif ch == "x":
             break
 
@@ -210,6 +219,12 @@ def _action_exit(state):
     state.running = False
 
 
+def _style_menu_option(label):
+    styled = (label.replace("[", f"[{Fore.WHITE}")
+              .replace("]", f"{Fore.CYAN}]"))
+    return f" * {styled}"
+
+
 # (label, handler) pairs. Label uses [k] to mark the highlighted key
 # letter; _print_menu styles it. Dict order is menu order.
 _ACTIONS = {
@@ -241,9 +256,7 @@ def _print_menu(state):
     print()
     print("Available actions:")
     for label, _ in _ACTIONS.values():
-        styled = (label.replace("[", f"[{Fore.WHITE}")
-                       .replace("]", f"{Fore.CYAN}]"))
-        print(f" * {styled}")
+        print(_style_menu_option(label))
     print(Style.RESET_ALL)
 
 
