@@ -52,15 +52,9 @@ import blinker
 from collections import namedtuple
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
-import warnings
 from db_adapter import JSONStore
 from site_model import SiteModel, StimConfig
 
-# Ignore warnings about opening too many figures or not finding contour lines 
-# issued by matplotlib
-warnings.filterwarnings("ignore", module="matplotlib")
-warnings.filterwarnings("ignore", message="No contour levels were found within the data range.")
-matplotlib.rcParams.update({'figure.max_open_warning': 0})
 logging.getLogger("kivy").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
