@@ -1,3 +1,10 @@
+import logging
+
+from logging_utils import configure_file_logging, install_excepthooks
+
+configure_file_logging("check_after_crash.log", level=logging.ERROR)
+install_excepthooks()
+
 import matplotlib
 matplotlib.use("TkAgg")
 
@@ -7,16 +14,12 @@ import subprocess
 import analysis_functions as afunc
 import subject_analysis
 from colorama import Fore, Style
-import logging
 import json
 import pandas as pd
 from dataclasses import dataclass, field
 from db_adapter import JSONStore
 import cli_utils as cli
 from dialogs import pump_until
-
-
-logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
 
 
 @dataclass
