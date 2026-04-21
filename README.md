@@ -2,7 +2,7 @@
 - [Setup](#setup)
   - [Anaconda (do this unless you know what you are doing without it)](#anaconda-do-this-unless-you-know-what-you-are-doing-without-it)
   - [Necessary software](#necessary-software)
-    - [Tesseract](#tesseract)
+    - [OCR resources](#ocr-resources)
     - [Special installs](#special-installs)
     - [Special note about Kivy](#special-note-about-kivy)
   - [(optional) Dadroit JSON viewer](#optional-dadroit-json-viewer)
@@ -12,9 +12,11 @@
   - [Analyze subject](#analyze-subject)
     - [Filetype](#filetype)
     - [Electrode penetration x/y data](#electrode-penetration-xy-data)
+    - [OCR sources and exports](#ocr-sources-and-exports)
     - [Voronoi tessellation](#voronoi-tessellation)
     - [Analysis](#analysis)
   - [Generate analysis from final file](#generate-analysis-from-final-file)
+  - [OCR template tools](#ocr-template-tools)
   - [Select fields GUI](#select-fields-gui)
   - [Final file generation](#final-file-generation)
   - [IC Final file generation](#ic-final-file-generation)
@@ -37,16 +39,15 @@ Download/install Anaconda https://www.anaconda.com/, then use the `conda-env.yml
 - `conda env create -f conda-env.yml -n <your-env-name>`
 
 ## Necessary software
-### Tesseract
-- Homepage: https://tesseract-ocr.github.io/tessdoc/Home.html
-- Windows installer: https://github.com/UB-Mannheim/tesseract/wiki
+### OCR resources
+Map-number OCR now uses the built-in `DigitOCR` template/font workflow. No Tesseract install or traineddata copy is required.
 
-Used for OCR of map images to create the beautiful voronoi plots with points and numbers all matched up.
+Out of the box, the program ships with a default OCR font at:
+- `resources/OCR-A.otf`
 
-Currently the path to the .exe **MUST** be given to python by the `map_analysis` program, and it is hardcoded to the default install location (which is highly recommended to leave as-is by tesseract Windows team anyway):
-- `"C:/Program Files/Tesseract-OCR"`
+If `resources/digit_templates.npz` exists, that template set is preferred over the default font. You can also browse to any other `.npz`, `.ttf`, or `.otf` file when prompted during analysis or template preview.
 
-After installing, you **MUST** copy `./resources/mapOCR.traineddata` from this repo to `"C:/Program Files/Tesseract-OCR/tessdata/"`. This is the training file that tells tesseract how to OCR our map numbers from associated image files. For the life of me I don't know why the non-specially-trained OCR engine struggles with what should be a simple job, but it does. This training file was a pain to create, but it works.
+If you want a project-specific OCR setup, use the `o` menu option in `map_analysis.py` to bootstrap a template set from your own number/mask images and save it wherever you want.
 
 ### Special installs
 #### kivy-garden
@@ -109,6 +110,18 @@ The program can load x/y coordinate data from images, "final files" (lab-specifi
 
 Demo analysis uses images -- select `i`, then use `demo/img/pts.png`, `demo/img/num.png`, and `demo/img/msk.png` for points, numbers, and mask, respectively.
 
+### OCR sources and exports
+If image-based coordinates are selected, the program next asks which OCR source to use for the map numbers.
+
+Default behavior:
+- If `resources/digit_templates.npz` exists, it is offered as the default OCR source.
+- Otherwise `resources/OCR-A.otf` is offered as the default OCR source.
+
+Alternative behavior:
+- If you answer `n` to the default prompt, you can browse to any saved OCR template set (`.npz`) or a font file (`.ttf` / `.otf`).
+
+After OCR finishes, the program shows a proof-sheet review of all recognized map numbers. You can optionally save the recognized coordinates to a `.csv` file (`number,x,y`) for record-keeping or reuse.
+
 ### Voronoi tessellation
 In auditory cortical maps, each point on the cortical surface is assumed to have the characteristics of the closest sampled penetration. A voronoi tessellation is generated from the map electrode x/y data. To prevent outer edges extending to infinity, an initial set of border points is automatically generated around the perimeter of the map (and their corresponding polygons ignored):
 ![Initial set of automatic border points around voronoi tessellation](resources/img/demo_prevor.png)
@@ -136,6 +149,21 @@ Speech and noiseburst auto-analyses were planned but never yet included, so only
 ## Generate analysis from final file
 Option specific to our lab for generating a subject analysis file for use with the "Select fields GUI" using a previous MATLAB format. Final file must be .xls file. Export `.mat` to `.xls` in MATLAB.
 - Currently you cannot add a new final-file analysis to an existing subject database, you have to make a new one.
+
+## OCR template tools
+Enter `o` at the main CLI menu to open the OCR template tools.
+
+Available actions:
+- `b` bootstraps a new OCR template set from a map `numbers` image plus its matching `mask` image.
+- `p` previews an OCR source before you use it. You can preview the default source or browse to another `.npz`, `.ttf`, or `.otf`.
+
+Bootstrap flow:
+- Choose whether to save to the default template path (`resources/digit_templates.npz`) or another `.npz` file.
+- Select a `numbers` image and its matching `mask` image.
+- Label each extracted digit crop interactively.
+- Save the resulting template set for later reuse in analysis.
+
+This is useful when the bundled `OCR-A.otf` works poorly for a given project's map images, or when you want to maintain multiple OCR sources for different projects.
 
 ## Select fields GUI
 GUI application to manually edit neurophysiological tuning curve analysis and select auditory cortical fields / responsive IC sites.
