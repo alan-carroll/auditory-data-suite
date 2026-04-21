@@ -3,6 +3,8 @@
 # rejected) by Kivy at import time.
 import os
 os.environ["KIVY_NO_ARGS"] = "1"
+
+# Reduce Kivy's logging spam to the terminal
 os.environ.setdefault("KIVY_LOG_MODE", "PYTHON")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 os.environ.setdefault("KIVY_NO_FILELOG", "1")
