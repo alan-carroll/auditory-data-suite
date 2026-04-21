@@ -4,6 +4,19 @@
 import os
 os.environ["KIVY_NO_ARGS"] = "1"
 
+# Reduce Kivy's logging spam to the terminal
+os.environ.setdefault("KIVY_LOG_MODE", "PYTHON")
+os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
+os.environ.setdefault("KIVY_NO_FILELOG", "1")
+
+import logging
+
+from logging_utils import configure_file_logging, install_excepthooks
+
+configure_file_logging("map_gui_log.log", level=logging.ERROR)
+install_excepthooks()
+logger = logging.getLogger(__name__)
+
 import datetime
 import itertools
 import numpy as np
@@ -33,27 +46,18 @@ import pandas as pd
 import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
 from kivy.uix.screenmanager import Screen, ScreenManager
-import logging
 from kivy.uix.slider import Slider
 import analysis_functions as afunc
 import blinker
 from collections import namedtuple
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
-import warnings
-from matplotlib.axes._axes import _log as matplotlib_axes_logger
 from db_adapter import JSONStore
 from site_model import SiteModel, StimConfig
 
-# Ignore warnings about opening too many figures or not finding contour lines 
-# issued by matplotlib
-warnings.filterwarnings("ignore", module="matplotlib")
-warnings.filterwarnings("ignore", message="No contour levels were found within the data range.")
-matplotlib.rcParams.update({'figure.max_open_warning': 0})
-matplotlib_axes_logger.setLevel('ERROR')
-
-logging.basicConfig(filename="map_gui_log.log", filemode="w")
-logging.getLogger('matplotlib.font_manager').disabled = True
+logging.getLogger("kivy").setLevel(logging.ERROR)
+logging.getLogger("matplotlib").setLevel(logging.ERROR)
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 Window.clearcolor = (1, 1, 1, 1)
 
@@ -777,7 +781,7 @@ class FieldSelectionGUI(BoxLayout):
             print("\n *** Ready! *** \n")
 
         except Exception as e:
-            logging.exception(e)
+            logger.exception("Failed to load map")
             InfoPopup(
                 "Error",
                 f"Failed to load map:\n{e}\n\n"

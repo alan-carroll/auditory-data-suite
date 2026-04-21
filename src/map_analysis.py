@@ -1,3 +1,10 @@
+import logging
+
+from logging_utils import configure_file_logging, install_excepthooks
+
+configure_file_logging("check_after_crash.log", level=logging.ERROR)
+install_excepthooks()
+
 import matplotlib
 matplotlib.use("TkAgg")
 
@@ -7,16 +14,12 @@ import subprocess
 import analysis_functions as afunc
 import subject_analysis
 from colorama import Fore, Style
-import logging
 import json
 import pandas as pd
 from dataclasses import dataclass, field
 from db_adapter import JSONStore
 import cli_utils as cli
 from dialogs import pump_until
-
-
-logging.basicConfig(filename="check_after_crash.log", level=logging.DEBUG)
 
 
 @dataclass
@@ -167,17 +170,17 @@ def _action_generate_from_final(state):
         "[y/n]? (slower) > "
     )
     file = afunc.get_file(title="Select final file",
-                          filetypes=[("XLS", ".xls")])
+                          filetypes=[("Excel workbook", ".xlsx")])
     if not file:
         return
     try:
-        # Use .xls final file. Uses v-plot format.
+        # Use .xlsx final file. Uses v-plot format.
         usecols = [1,2,6,7,8,11,12,13,16,17,18,21,22,23,25,34,40,41,42,43]
         colnames = ["cf","thresh","bw10a","bw10b","bw10","bw20a","bw20b",
                     "bw20","bw30a","bw30b","bw30","bw40a","bw40b","bw40",
                     "onset","offset","x","y","field","number",]
         map_df = pd.read_excel(file, header=None, usecols=usecols,
-                               names=colnames)
+                               names=colnames, engine="openpyxl")
         subject_analysis.run_program(state.config_dict, state.version,
                                      final_file=map_df, return_sdf=return_sdf)
     except Exception as e:
