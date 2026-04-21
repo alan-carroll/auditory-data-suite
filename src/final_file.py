@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import shapely.geometry as geometry
+from pathlib import Path
 
 import cli_utils as cli
 from dialogs import get_file, save_file, load_analysis
@@ -17,7 +18,7 @@ _FIELD_CODES = {"": 0, "A1": 0, "AAF": 1, "PAF": 2, "Other": 3,
 def create_final_file(ic_bool=False):
     """
     Load an analysis for a subject and export to v-plot style 'final file'.
-    Writes a .csv file. Import into MATLAB to save as .mat file.
+    Writes a .xlsx file. Import into MATLAB to save as .mat file.
     
     IC final files have a reduced export.
     """
@@ -151,11 +152,15 @@ def create_final_file(ic_bool=False):
 
     cli.info("Select a location and file name to save your 'final file' to: ")
     save_location = save_file(title="Save final file", 
-                              filetypes=[("XLS", ".xls")])
-    print(save_location+".xls")
-    # Write final file out to .csv file. 
+                              filetypes=[("Excel workbook", ".xlsx")])
+    if not save_location:
+        return
+    save_path = Path(save_location)
+    if save_path.suffix.lower() != ".xlsx":
+        save_path = save_path.with_suffix(".xlsx")
+    print(save_path)
+    # Write final file out to .xlsx file.
     # MATLAB will be used to convert to .mat file
-    excel_writer = pd.ExcelWriter(save_location+".xls")
     df = pd.DataFrame(final_file)
-    df.to_excel(excel_writer, index=False, header=False)
-    excel_writer.close()
+    with pd.ExcelWriter(save_path, engine="openpyxl") as excel_writer:
+        df.to_excel(excel_writer, index=False, header=False)

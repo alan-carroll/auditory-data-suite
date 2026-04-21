@@ -208,11 +208,12 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
                 "Select spreadsheet containing 'final file' format data:"
             )
             coords_sheet = afunc.get_file(title="Select final file",
-                                          filetypes=[("XLS", ".xls")])
+                                          filetypes=[("Excel workbook", ".xlsx")])
             map_points_df = pd.read_excel(coords_sheet,
                                           header=None,
                                           usecols=[40, 41, 43],
-                                          names=["x", "y", "number"])
+                                          names=["x", "y", "number"],
+                                          engine="openpyxl")
         elif image_or_point_list == "c":
             cli.info("Select .csv file with cols number,x,y (no headers):")
             coords_sheet = afunc.get_file(title="Select Map number,x,y file",
