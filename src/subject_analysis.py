@@ -94,8 +94,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     image_or_point_list = None
     ic_points_df = pd.DataFrame([{"number": None}])
     if config_dict["do_IC"]:
-        response = cli.ask_yes_no("Does this subject have IC data [y/n]? > ")
-        if response == "y":
+        if cli.ask_yes_no("Does this subject have IC data [y/n]? > "):
             ic_bool = True
             cli.info(
                 "Select .csv file listing IC map Penetration numbers with "
@@ -108,8 +107,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
             ic_points_df = ic_points_df.sort_values("number")
             ic_points_df.reset_index(inplace=True, drop=True)
 
-            response = cli.ask_yes_no("Is this an IC only map [y/n]? > ")
-            if response == "y":
+            if cli.ask_yes_no("Is this an IC only map [y/n]? > "):
                 ic_only = True
 
     image_or_point_list = ""
