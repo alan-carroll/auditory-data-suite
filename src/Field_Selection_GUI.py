@@ -19,9 +19,19 @@ from collections import namedtuple
 from logging_utils import configure_file_logging, install_excepthooks
 from compat import install_distutils_version_shim
 import numpy as np
+from matplotlib import colors as mpl_colors, colormaps as mpl_colormaps
+from matplotlib.collections import LineCollection
+from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
+import cmocean
 from db_adapter import JSONStore
 from site_model import SiteModel, StimConfig
+
+# kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
+install_distutils_version_shim()
+from kivy_garden.matplotlib.backend_kivyagg import (
+    FigureCanvasKivyAgg as FigureCanvas,
+)
 
 configure_file_logging("map_gui_log.log", level=logging.ERROR)
 install_excepthooks()
