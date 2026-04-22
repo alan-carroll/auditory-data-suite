@@ -77,7 +77,7 @@ Bootstrap output can go either to the default path `resources/digit_templates.np
 
 ### New project configuration
 
-Running a new analysis requires the use of a configuration file so that the program knows how to handle your data. Enter n and follow the prompts.
+Running a new analysis requires the use of a configuration file so that the program knows how to handle your data. Enter `n` and follow the prompts.
 
 ### Load configuration
 
