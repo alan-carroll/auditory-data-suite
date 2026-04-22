@@ -62,6 +62,13 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 if Window is not None:
     Window.clearcolor = (1, 1, 1, 1)
+    Window.size = (max(Window.width, 1500), max(Window.height, 950))
+
+
+LineTuple = namedtuple("LineTuple",
+                       ["line", "color", "x_norm", "y_norm", "site_number"])
+MeshTuple = namedtuple("MeshTuple",
+                       ["mesh", "color", "x_norm", "y_norm", "site_number"])
 
 
 class FieldSelectionApp(App):
@@ -490,6 +497,12 @@ class FieldSelectionGUI(BoxLayout):
         self.site_screens = {}
         self.site_models = {}
         self.stim_config = None
+        self._site_render_iter = None
+        self._render_batch_size = 4
+        self._total_sites = 0
+        self._rendered_sites = 0
+        self.load_popup = None
+        self.load_popup_label = None
 
         self.vor_df = None
         self.dense_df = None
@@ -540,6 +553,7 @@ class FieldSelectionGUI(BoxLayout):
 
         # Arrange GUI
         tools = StackLayout(orientation="lr-tb", size_hint=(0.075, 1))
+        self.tools_panel = tools
         self.cf_spinner_label = Label(text="CF\n Colormap", 
                                       color=[0, 0, 0, 1], 
                                       size_hint=(1, 0.06), 
@@ -615,7 +629,7 @@ class FieldSelectionGUI(BoxLayout):
         tools.add_widget(self.field_spinner_label)
         tools.add_widget(self.field_spinner)
 
-        self.plot_tools_layout = StackLayout(orientation="lr-tb", 
+        self.plot_tools_layout = StackLayout(orientation="lr-tb",
                                              size_hint=(0.075, 1))
 
         self.toggle_contour = ToggleButton(text="Contours", 
@@ -674,7 +688,6 @@ class FieldSelectionGUI(BoxLayout):
                                       values={"None", "10", "20", "30", "40"}, 
                                       size_hint=(1, 0.06))
         self.psth_y_spinner.bind(text=self.on_psth_ylim)
-
         self.plot_tools_layout.add_widget(self.toggle_contour)
         self.plot_tools_layout.add_widget(self.toggle_lineplot)
         self.plot_tools_layout.add_widget(self.toggle_bw)
@@ -705,6 +718,74 @@ class FieldSelectionGUI(BoxLayout):
             import blinker
             self.flash_signal = blinker.signal("flash")
             self.flash_signal.connect(self.flash_cell)
+
+    def _set_loading_state(self, active):
+        self.tools_panel.disabled = active
+        self.plot_tools_layout.disabled = active
+        self.scroll.disabled = active
+
+    def _show_load_popup(self):
+        if self.load_popup is not None:
+            return
+        layout = BoxLayout(orientation="vertical", padding=18)
+        self.load_popup_label = Label(
+            text="",
+            markup=True,
+            halign="center",
+            valign="middle",
+            color=[0.96, 0.96, 0.96, 1],
+            font_size="26sp",
+        )
+        self.load_popup_label.bind(
+            size=self.load_popup_label.setter("text_size"))
+        layout.add_widget(self.load_popup_label)
+        self.load_popup = Popup(
+            title="",
+            content=layout,
+            size_hint=(None, None),
+            size=(360, 140),
+            auto_dismiss=False,
+            separator_height=0,
+        )
+        self.load_popup.open()
+
+    def _hide_load_popup(self):
+        if self.load_popup is None:
+            return
+        self.load_popup.dismiss()
+        self.load_popup = None
+        self.load_popup_label = None
+
+    def _update_load_status(self):
+        if self._total_sites and self.load_popup_label is not None:
+            self.load_popup_label.text = (
+                "[b]Loading overview[/b]\n"
+                f"{self._rendered_sites}/{self._total_sites} sites"
+            )
+
+    def _center_scroll_view(self, _dt=0):
+        if self.scroll.width <= 0 or self.scroll.height <= 0:
+            return
+        if self.map_canvas.width > self.scroll.width:
+            self.scroll.scroll_x = 0.5
+        else:
+            self.scroll.scroll_x = 0
+        if self.map_canvas.height > self.scroll.height:
+            self.scroll.scroll_y = 0.5
+        else:
+            self.scroll.scroll_y = 1
+
+    def _schedule_center_scroll_view(self):
+        for delay in (0, 0.05, 0.2):
+            Clock.schedule_once(self._center_scroll_view, delay)
+
+    def _start_display_map_batches(self, _dt):
+        self._show_load_popup()
+        self._update_load_status()
+        self._schedule_center_scroll_view()
+        # Give Kivy a beat to paint the popup before the first matplotlib
+        # batch starts chewing through the event loop.
+        Clock.schedule_once(self._display_map_batch, 0.05)
 
     def _load(self, _dt):
         """
@@ -785,7 +866,6 @@ class FieldSelectionGUI(BoxLayout):
                 fallback_sweep_ms=len(any_analysis["psth"]))
 
             self.display_map()
-            print("\n *** Ready! *** \n")
 
         except Exception as e:
             logger.exception("Failed to load map")
@@ -1102,125 +1182,130 @@ class FieldSelectionGUI(BoxLayout):
         return sites
 
     def display_map(self):
-        """Generate map visuals."""
-        LineTuple = namedtuple("LineTuple", 
-                               ["line", "color", "x_norm", "y_norm", 
-                                "site_number"])
-        MeshTuple = namedtuple("MeshTuple", 
-                               ["mesh", "color", "x_norm", "y_norm", 
-                                "site_number"])
-        for site in self.sites:
-            # xy coords are already normalized, but here we reduce them to 90%
-            # to provide some padding at the border of MapLayout -> allows 
-            # the user to move edge sites a little closer to the center for 
-            # easier viewing. Purely aesthetic.
-            reduced_scale = [0.1, 0.9]
-            site_number = site["number"]
-            site_analysis = self.densetc_analysis[site_number]
-            # If 'marked' is not a current document property from database 
-            # (analysis from older versions), add it.
-            if "marked" not in site_analysis:
-                site_analysis["marked"] = False
-
-            # Recreate set of field and marked assignments saved in analysis 
-            # for proper painting of sites
-            if site_analysis["field_assignment"]:
-                self.map_sets[
-                    site_analysis["field_assignment"]].add(site_number)
-            if site_analysis["marked"]:
-                self.map_sets["Mark"].add(site_number)
-
-            x = (site["voronoi_centroid"][0] * 
-                 (reduced_scale[1] - reduced_scale[0]) / 
-                 (1 - 0) + reduced_scale[0])
-            y = (site["voronoi_centroid"][1] * 
-                 (reduced_scale[1] - reduced_scale[0]) / 
-                 (1 - 0) + reduced_scale[0])
-            
-            model = SiteModel(site_number,
-                              self.densetc_data[site_number],
-                              site_analysis,
-                              self.stim_config)
-            self.site_models[site_number] = model
-            site_plot = SitePlot(
-                model=model,
-                detailed_plot=False,
-                is_ic=self.ic_bool,
-                cf_cmap=self.cf_colormap_dropdown.text,
-                heatmap_cmap=self.heatmap_colormap_dropdown.text,
-                size_hint=(None, None), 
-                pos_hint={"center_x": x, "center_y": y},
-                height=150, 
-                width=200)
-
-            self.plot_dict[site_number] = site_plot
-            self.map_canvas.add_widget(site_plot)
-            with self.map_canvas.canvas.before:
-                # Check if site should start painted some color
-                if site_analysis["field_assignment"] and not self.marks_active:
-                    line_color = Color(*hex2rgb(
-                        self.field_line_colors[
-                            site_analysis["field_assignment"]]))
-                    lw = 3
-                elif site_analysis["marked"] and self.marks_active:
-                    line_color = Color(*hex2rgb(
-                        self.field_line_colors["Mark"]))
-                    lw = 3
-                else:
-                    # Paint default color
-                    line_color = Color(0.435, 0.51, 0.541, 1)  #xkcd:steel grey
-                    lw = 1.5
-
-                poly_norm_points = site["voronoi_vertices"]
-                poly_x = [pnt[0] * (reduced_scale[1] - reduced_scale[0]) / 
-                          (1 - 0) + reduced_scale[0] for pnt in 
-                          poly_norm_points]
-                poly_y = [pnt[1] * (reduced_scale[1] - reduced_scale[0]) / 
-                          (1 - 0) + reduced_scale[0] for pnt in 
-                          poly_norm_points]
-                height = self.map_canvas.height
-                width = self.map_canvas.width
-                poly_x_adjusted = list(np.array(poly_x) * width)
-                poly_y_adjusted = list(np.array(poly_y) * height)
-                adjusted_points = list(itertools.chain(*zip(poly_x_adjusted, 
-                                                            poly_y_adjusted)))
-                line_ = Line(points=adjusted_points, width=lw, close=True)
-                self.vor_lines[site_number] = LineTuple(
-                    line=line_, color=line_color, x_norm=poly_x, y_norm=poly_y,
-                    site_number=site_number)
-                mesh_adjusted_points = list(itertools.chain(*[
-                    (x, y, 0, 0) for x, y in 
-                    zip(poly_x_adjusted, poly_y_adjusted)]))
-                indices = list(range(len(poly_x_adjusted)))
-
-                # Check if site should start painted some color
-                # mesh_color must be declared AFTER line color is done being 
-                # used, as Kivy uses a universal Color() rather than a keyword 
-                # argument. Assigning line_color and mesh_color in the same 
-                # if/else block would result in Lines and Meshes with 
-                # identical colors.
-                if site_analysis["field_assignment"] and not self.marks_active:
-                    mesh_color = Color(*hex2rgb(
-                        self.field_colors[site_analysis["field_assignment"]]))
-                elif site_analysis["marked"] and self.marks_active:
-                    mesh_color = Color(*hex2rgb(self.field_colors["Mark"]))
-                else:
-                    mesh_color = Color(1, 1, 1, 1)
-
-                mesh_ = Mesh(vertices=mesh_adjusted_points, indices=indices, 
-                             mode="triangle_fan")
-                self.vor_meshes[site_number] = MeshTuple(
-                    mesh=mesh_, color=mesh_color, x_norm=poly_x, y_norm=poly_y,
-                    site_number=site_number)
-                self.vor_active[site_number] = True
-
+        """Generate map visuals progressively so the window shows progress."""
         self.map_canvas.bind(size=self.update_line)
         self.map_canvas.bind(size=self.update_mesh)
-
         self.map_canvas.height = int(self.map_metadata["map_height"])
         self.map_canvas.width = int(self.map_metadata["map_width"])
+        self.map_loaded = False
+        self._set_loading_state(True)
+        self._site_render_iter = iter(self.sites)
+        self._total_sites = len(self.sites)
+        self._rendered_sites = 0
+        Clock.schedule_once(self._start_display_map_batches, 0)
 
+    def _display_map_batch(self, _dt):
+        rendered_this_tick = 0
+        while rendered_this_tick < self._render_batch_size:
+            try:
+                site = next(self._site_render_iter)
+            except StopIteration:
+                self._finish_display_map()
+                return False
+            self._display_site(site)
+            rendered_this_tick += 1
+
+        self._update_load_status()
+        Clock.schedule_once(self._display_map_batch, 0.01)
+        return False
+
+    def _finish_display_map(self):
+        self._site_render_iter = None
         self.map_loaded = True
+        self._set_loading_state(False)
+        self._hide_load_popup()
+        self._schedule_center_scroll_view()
+        print("\n *** Ready! *** \n")
+
+    def _display_site(self, site):
+        # xy coords are already normalized, but here we reduce them to 90%
+        # to provide some padding at the border of MapLayout -> allows
+        # the user to move edge sites a little closer to the center for
+        # easier viewing. Purely aesthetic.
+        reduced_scale = [0.1, 0.9]
+        site_number = site["number"]
+        site_analysis = self.densetc_analysis[site_number]
+        if "marked" not in site_analysis:
+            site_analysis["marked"] = False
+
+        if site_analysis["field_assignment"]:
+            self.map_sets[site_analysis["field_assignment"]].add(site_number)
+        if site_analysis["marked"]:
+            self.map_sets["Mark"].add(site_number)
+
+        x = (site["voronoi_centroid"][0] *
+             (reduced_scale[1] - reduced_scale[0]) /
+             (1 - 0) + reduced_scale[0])
+        y = (site["voronoi_centroid"][1] *
+             (reduced_scale[1] - reduced_scale[0]) /
+             (1 - 0) + reduced_scale[0])
+
+        model = SiteModel(site_number,
+                          self.densetc_data[site_number],
+                          site_analysis,
+                          self.stim_config)
+        self.site_models[site_number] = model
+        site_plot = SitePlot(
+            model=model,
+            detailed_plot=False,
+            is_ic=self.ic_bool,
+            cf_cmap=self.cf_colormap_dropdown.text,
+            heatmap_cmap=self.heatmap_colormap_dropdown.text,
+            size_hint=(None, None),
+            pos_hint={"center_x": x, "center_y": y},
+            height=150,
+            width=200)
+
+        self.plot_dict[site_number] = site_plot
+        self.map_canvas.add_widget(site_plot)
+        with self.map_canvas.canvas.before:
+            if site_analysis["field_assignment"] and not self.marks_active:
+                line_color = Color(*hex2rgb(
+                    self.field_line_colors[site_analysis["field_assignment"]]))
+                lw = 3
+            elif site_analysis["marked"] and self.marks_active:
+                line_color = Color(*hex2rgb(self.field_line_colors["Mark"]))
+                lw = 3
+            else:
+                line_color = Color(0.435, 0.51, 0.541, 1)
+                lw = 1.5
+
+            poly_norm_points = site["voronoi_vertices"]
+            poly_x = [pnt[0] * (reduced_scale[1] - reduced_scale[0]) /
+                      (1 - 0) + reduced_scale[0] for pnt in poly_norm_points]
+            poly_y = [pnt[1] * (reduced_scale[1] - reduced_scale[0]) /
+                      (1 - 0) + reduced_scale[0] for pnt in poly_norm_points]
+            height = self.map_canvas.height
+            width = self.map_canvas.width
+            poly_x_adjusted = list(np.array(poly_x) * width)
+            poly_y_adjusted = list(np.array(poly_y) * height)
+            adjusted_points = list(itertools.chain(*zip(poly_x_adjusted,
+                                                        poly_y_adjusted)))
+            line_ = Line(points=adjusted_points, width=lw, close=True)
+            self.vor_lines[site_number] = LineTuple(
+                line=line_, color=line_color, x_norm=poly_x, y_norm=poly_y,
+                site_number=site_number)
+            mesh_adjusted_points = list(itertools.chain(*[
+                (x, y, 0, 0) for x, y in zip(poly_x_adjusted, poly_y_adjusted)
+            ]))
+            indices = list(range(len(poly_x_adjusted)))
+
+            if site_analysis["field_assignment"] and not self.marks_active:
+                mesh_color = Color(*hex2rgb(
+                    self.field_colors[site_analysis["field_assignment"]]))
+            elif site_analysis["marked"] and self.marks_active:
+                mesh_color = Color(*hex2rgb(self.field_colors["Mark"]))
+            else:
+                mesh_color = Color(1, 1, 1, 1)
+
+            mesh_ = Mesh(vertices=mesh_adjusted_points, indices=indices,
+                         mode="triangle_fan")
+            self.vor_meshes[site_number] = MeshTuple(
+                mesh=mesh_, color=mesh_color, x_norm=poly_x, y_norm=poly_y,
+                site_number=site_number)
+            self.vor_active[site_number] = True
+
+        self._rendered_sites += 1
 
     def change_bubble_size(self, _slider, value):
         """Event signaling update to max bubble size for TC plot."""
@@ -1501,21 +1586,6 @@ class SitePlot(RelativeLayout):
     def __init__(self, model, detailed_plot, is_ic,
                  cf_cmap, heatmap_cmap, **layout_kwargs):
         super().__init__(**layout_kwargs)
-
-        from matplotlib import colors, colormaps
-        from matplotlib.collections import LineCollection
-        from matplotlib.figure import Figure
-
-        # kivy_garden.matplotlib still imports distutils.version on
-        # Python 3.12+.
-        install_distutils_version_shim()
-        from kivy_garden.matplotlib.backend_kivyagg import (
-            FigureCanvasKivyAgg as FigureCanvas,
-        )
-
-        self._mpl_colors = colors
-        self._mpl_colormaps = colormaps
-        self._LineCollection = LineCollection
         self.model = model
         self.detailed_plot = detailed_plot
         cfg = model.config
@@ -1527,19 +1597,18 @@ class SitePlot(RelativeLayout):
             self.on_cf_pick_signal = blinker.Signal()
 
         # Allow user to change cmaps used for plots
-        self.cf_cmap = self._mpl_colormaps[cf_cmap]
+        self.cf_cmap = mpl_colormaps[cf_cmap]
         self.heatmap_cmap = heatmap_cmap
         # TODO test 48khz
-        self.norm = self._mpl_colors.Normalize(
+        self.norm = mpl_colors.Normalize(
             vmin=0, vmax=cfg.num_frequency - 1)
 
         # IC responses are faster than cortical, so the latency colour
         # range is tighter and lower. PowerNorm(0.65) stretches the low
         # end where most onsets sit.
         lo, hi = (1, 16) if is_ic else (5, 20)
-        import cmocean
         self.speed_cmap = cmocean.cm.speed
-        self.speed_norm = self._mpl_colors.PowerNorm(
+        self.speed_norm = mpl_colors.PowerNorm(
             0.65, vmin=lo, vmax=hi)
 
         # Display toggles
@@ -1688,7 +1757,7 @@ class SitePlot(RelativeLayout):
     def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
         """Update bubble plot or heatmap colors."""
         self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = self._mpl_colormaps[cf_cmap]
+        self.cf_cmap = mpl_colormaps[cf_cmap]
         # TODO allow user to change No CF color (default is red)
         if self.use_heatmap and self.heatmap is not None:
             self.heatmap.set_cmap(self.heatmap_cmap)
@@ -1727,7 +1796,7 @@ class SitePlot(RelativeLayout):
         scaled = self._scale_sizes(self.val, max_len)
         segs = [[[x, y + 0.25], [x, y + 0.25 - s]]
                 for x, y, s in zip(self.col, self.row, scaled)]
-        self.line = self._LineCollection(segs, linewidths=2, colors="y")
+        self.line = LineCollection(segs, linewidths=2, colors="y")
         ax.add_collection(self.line)
         ax.set_facecolor(axis_color)
         self._draw_tc_overlays(
