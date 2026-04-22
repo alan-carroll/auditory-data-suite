@@ -500,11 +500,6 @@ class FieldSelectionGUI(BoxLayout):
         self.densetc_data_collection = None
         self.analysis_metadata_collection = None
         self.project_configuration = None
-        self.frequency = None
-        self.intensity = None
-        self.num_frequency = None
-        self.num_intensity = None
-        self.num_tones = None
         self.sites = None
         self.densetc_data = None
         self.densetc_analysis = None
@@ -845,14 +840,6 @@ class FieldSelectionGUI(BoxLayout):
             self.project_configuration = \
                 self.analysis_metadata_collection.find_one(
                     {"configuration": {"$exists": True}})["configuration"]
-            self.frequency = np.sort(
-                self.project_configuration["densetc_frequency_hz"])
-            self.intensity = np.sort(
-                self.project_configuration["densetc_intensity_db"])
-            self.num_frequency = len(self.frequency)
-            self.num_intensity = len(self.intensity)
-            self.num_tones = \
-                self.project_configuration["densetc_num_tones"]
 
             # --- Sites, data, analysis -------------------------------
             if is_ic:
