@@ -1485,11 +1485,12 @@ class MapLayout(FloatLayout):
         """
         Extend the paint stroke.
         """
-        # TODO tighten to `except KeyError` if verified same as `on_touch_up`
         try:
             if self.gui.paint_mode_active:
                 touch.ud["line"].points += [touch.x, touch.y]
-        except:
+        except KeyError:
+            # Thrown if program tries to interpret line drawn over GUI elements
+            super().on_touch_move(touch)
             pass
 
     def on_touch_up(self, touch):
@@ -1521,8 +1522,7 @@ class MapLayout(FloatLayout):
             stroke = touch.ud["line"].points
             selection_points = list(zip(stroke[0::2], stroke[1::2]))
         except KeyError:
-            # Error sometimes thrown when program tries to interpret a line
-            # drawn over other GUI elements
+            # Thrown if program tries to interpret line drawn over GUI elements
             super().on_touch_up(touch)
             return
 
