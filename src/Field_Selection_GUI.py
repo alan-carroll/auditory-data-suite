@@ -1582,7 +1582,6 @@ class SitePlot(RelativeLayout):
 
         # Aesthetics
         self.fig.patch.set_alpha(0)
-        self.fig.subplots_adjust(wspace=0, hspace=0)
         self._has_render = False
         self._needs_redraw = detailed_plot
         
