@@ -3,7 +3,6 @@ import itertools
 from collections import namedtuple
 
 import numpy as np
-import pandas as pd
 from scipy.stats import ttest_ind
 from skimage.measure import label, regionprops
 

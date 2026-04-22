@@ -19,6 +19,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from shapely.geometry import Point
@@ -64,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_points(csv_path: str | None) -> np.ndarray:
+def load_points(csv_path: Optional[str]) -> np.ndarray:
     if csv_path is None:
         return sample_points()
 

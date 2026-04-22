@@ -21,6 +21,7 @@ from db_adapter import JSONStore
 import cli_utils as cli
 from dialogs import pump_until
 
+_VERSION = "2.0"
 
 @dataclass
 class _MenuState:
@@ -260,11 +261,16 @@ def _print_menu(state):
     print(Style.RESET_ALL)
 
 
-if __name__ == "__main__":
-    state = _MenuState(version="1.0")
+def main():
+    state = _MenuState(version=_VERSION)
     while state.running:
         _print_menu(state)
         ch = input("> ").strip().lower()
         action = _ACTIONS.get(ch)
         if action:
             action[1](state)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
