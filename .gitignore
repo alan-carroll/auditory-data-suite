@@ -1,3 +1,20 @@
 __pycache__
 *.log
 .vscode/
+
+# Python bytecode / caches
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local virtual environments
+.venv/
+src/.venv/
+
+# Nox environments
+.nox/
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
