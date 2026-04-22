@@ -26,7 +26,7 @@ FIELD_FILL_COLORS = {
     "SRAF": "#edc8ff",  # xkcd:light lilac
     "NAR": "#5a7d9a",   # xkcd:steel blue
     "Other": "#b04e0f", # xkcd:burnt sienna
-    "Mark": "#c1fd95",  # xkcd:celery
+    MARK_FIELD: "#c1fd95",  # xkcd:celery
 }
 
 FIELD_LINE_COLORS = {
@@ -37,5 +37,5 @@ FIELD_LINE_COLORS = {
     "SRAF": "#c44dff",
     "NAR": "#394e60",
     "Other": "#5e2908",
-    "Mark": "#60dc04",
+    MARK_FIELD: "#60dc04",
 }
