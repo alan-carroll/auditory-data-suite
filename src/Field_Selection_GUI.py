@@ -9,29 +9,27 @@ os.environ.setdefault("KIVY_LOG_MODE", "PYTHON")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 os.environ.setdefault("KIVY_NO_FILELOG", "1")
 
+# Non-interactive MPL backend
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import logging
+import itertools
+from collections import namedtuple
 
 from logging_utils import configure_file_logging, install_excepthooks
 from compat import install_distutils_version_shim
+import numpy as np
+from matplotlib.path import Path as MplPath
+from db_adapter import JSONStore
+from site_model import SiteModel, StimConfig
 
 configure_file_logging("map_gui_log.log", level=logging.ERROR)
 install_excepthooks()
 logger = logging.getLogger(__name__)
 
-import datetime
-import itertools
-import numpy as np
-import matplotlib
-# Pin non-interactive backend prior to importing kivy
-matplotlib.use("Agg")
-# kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
-install_distutils_version_shim()
 from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
-# Pip-installable replacement for the legacy `garden install matplotlib` flower.
-# Aliased so the rest of the module doesn't need to change.
-from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg as FigureCanvas
 from kivy.uix.scrollview import ScrollView
 from kivy.core.window import Window
 from kivy.uix.button import Button
@@ -44,19 +42,9 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
-from matplotlib.path import Path as MplPath
-import pandas as pd
-import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
 from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.uix.slider import Slider
-import analysis_functions as afunc
-import blinker
-from collections import namedtuple
-from matplotlib.collections import LineCollection
-from matplotlib.figure import Figure
-from db_adapter import JSONStore
-from site_model import SiteModel, StimConfig
 
 logging.getLogger("kivy").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
@@ -98,9 +86,6 @@ class SiteScreen(Screen):
         self.unsaved_changes = False
         self.map_number = num
         self.gui_instance = gui_instance
-
-        # Flash site when returning to Map screen
-        self.flash_signal = blinker.signal("flash")
 
         # Arrange GUI
         self.layout = BoxLayout(orientation="vertical")
@@ -316,6 +301,8 @@ class SiteScreen(Screen):
         Persist working state to the DB and commit it as the new
         reset baseline.
         """
+        import datetime
+        import analysis_functions as afunc
         model = self.densetc_plot.model
         st = model.working
         cfg = model.config
@@ -391,6 +378,7 @@ class SiteScreen(Screen):
         Re-run the TC auto-analysis at the current latency window and
         load results into working state. Nothing persists until Save.
         """
+        import analysis_functions as afunc
         model = self.densetc_plot.model
         st = model.working
         cfg = model.config
@@ -429,7 +417,7 @@ class SiteScreen(Screen):
             # Non-responsive sites occasionally raise on draw; harmless.
             pass
 
-        self.flash_signal.send(
+        self.gui_instance.flash_signal.send(
             self.map_number,
             unsaved_changes=self.unsaved_changes,
             marked=self.densetc_plot.model.working.marked)
@@ -456,9 +444,8 @@ class FieldSelectionGUI(BoxLayout):
         window and picking again from the CLI.
         """
         super(FieldSelectionGUI, self).__init__(orientation="horizontal")
-        # Connect to signal for tracking transition from Site to Map Screens.
-        self.flash_signal = blinker.signal("flash")
-        self.flash_signal.connect(self.flash_cell)
+        # Lazily wired when the first detail screen is opened.
+        self.flash_signal = None
         self.flash_lw = 0
         self.flash_times = 0
         self.flash_line_color = None
@@ -703,6 +690,12 @@ class FieldSelectionGUI(BoxLayout):
         # canvas, which needs the event loop running.
         Clock.schedule_once(self._load)
 
+    def _ensure_flash_signal(self):
+        if self.flash_signal is None:
+            import blinker
+            self.flash_signal = blinker.signal("flash")
+            self.flash_signal.connect(self.flash_cell)
+
     def _load(self, _dt):
         """
         Connect to the DB, read project config, fetch sites + data +
@@ -810,6 +803,7 @@ class FieldSelectionGUI(BoxLayout):
         `self.parent` is the MapScreen that owns this layout.
         """
         if site_number not in self.site_screens:
+            self._ensure_flash_signal()
             detail_plot = SitePlot(
                 model=self.site_models[site_number],
                 detailed_plot=True,
@@ -994,6 +988,8 @@ class FieldSelectionGUI(BoxLayout):
     def export_map(self, _event):
         """Save Auditory Field selections and Marked sites to .json file."""
         if self.map_loaded:
+            import datetime
+
             if self.marks_active:  # Save marks instead of fields
                 for site in self.sites:
                     site_number = site["number"]
@@ -1051,6 +1047,7 @@ class FieldSelectionGUI(BoxLayout):
         per-depth max to skip the zeros, then backfill the topmost site(s)
         which have nothing before them to diff against.
         """
+        import pandas as pd
         ic_sites = [
             {"number": int(s["number"]), "depth": int(s["depth"])}
             for s in self.densetc_data_collection.find({})
@@ -1495,28 +1492,45 @@ class SitePlot(RelativeLayout):
                  cf_cmap, heatmap_cmap, **layout_kwargs):
         super().__init__(**layout_kwargs)
 
+        from matplotlib import colors, colormaps
+        from matplotlib.collections import LineCollection
+        from matplotlib.figure import Figure
+
+        # kivy_garden.matplotlib still imports distutils.version on
+        # Python 3.12+.
+        install_distutils_version_shim()
+        from kivy_garden.matplotlib.backend_kivyagg import (
+            FigureCanvasKivyAgg as FigureCanvas,
+        )
+
+        self._mpl_colors = colors
+        self._mpl_colormaps = colormaps
+        self._LineCollection = LineCollection
         self.model = model
         self.detailed_plot = detailed_plot
         cfg = model.config
 
         if detailed_plot:
             # Listen for signals
+            import blinker
             self.on_changes_signal = blinker.Signal()
             self.on_cf_pick_signal = blinker.Signal()
 
         # Allow user to change cmaps used for plots
-        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        self.cf_cmap = self._mpl_colormaps[cf_cmap]
         self.heatmap_cmap = heatmap_cmap
         # TODO test 48khz
-        self.norm = matplotlib.colors.Normalize(
+        self.norm = self._mpl_colors.Normalize(
             vmin=0, vmax=cfg.num_frequency - 1)
 
         # IC responses are faster than cortical, so the latency colour
         # range is tighter and lower. PowerNorm(0.65) stretches the low
         # end where most onsets sit.
         lo, hi = (1, 16) if is_ic else (5, 20)
+        import cmocean
         self.speed_cmap = cmocean.cm.speed
-        self.speed_norm = matplotlib.colors.PowerNorm(0.65, vmin=lo, vmax=hi)
+        self.speed_norm = self._mpl_colors.PowerNorm(
+            0.65, vmin=lo, vmax=hi)
 
         # Display toggles
         self.use_smooth_tc = False
@@ -1665,7 +1679,7 @@ class SitePlot(RelativeLayout):
     def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
         """Update bubble plot or heatmap colors."""
         self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        self.cf_cmap = self._mpl_colormaps[cf_cmap]
         # TODO allow user to change No CF color (default is red)
         if self.use_heatmap and self.heatmap is not None:
             self.heatmap.set_cmap(self.heatmap_cmap)
@@ -1704,7 +1718,7 @@ class SitePlot(RelativeLayout):
         scaled = self._scale_sizes(self.val, max_len)
         segs = [[[x, y + 0.25], [x, y + 0.25 - s]]
                 for x, y, s in zip(self.col, self.row, scaled)]
-        self.line = LineCollection(segs, linewidths=2, colors="y")
+        self.line = self._LineCollection(segs, linewidths=2, colors="y")
         ax.add_collection(self.line)
         ax.set_facecolor(axis_color)
         self._draw_tc_overlays(
@@ -1919,6 +1933,7 @@ class SitePlot(RelativeLayout):
             event.canvas.draw()
 
     def move_line(self, x, y):
+        import analysis_functions as afunc
         xdata, _ = self.ax[0].transData.inverted().transform((x, y))
         if xdata is None:
             return
