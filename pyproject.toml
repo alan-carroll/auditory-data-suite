@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auditory-data-suite"
+version = "2.0.0"
+description = "Auditory neural mapping analysis CLI and GUI tools."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "blinker",
+  "cmocean",
+  "colorama",
+  "kivy>=2.3",
+  "kivy-garden.matplotlib",
+  "llvmlite",
+  "matplotlib",
+  "neo",
+  "numba",
+  "numpy",
+  "openpyxl",
+  "opencv-python",
+  "packaging",
+  "pandas",
+  "Pillow",
+  "ray",
+  "scikit-image",
+  "scipy",
+  "shapely",
+  "tinydb",
+]
+
+[project.scripts]
+map-analysis = "map_analysis:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["stim_types"]
+py-modules = [
+  "Field_Selection_GUI",
+  "analysis_admin",
+  "analysis_functions",
+  "bayesian_bins",
+  "brainware",
+  "cli_utils",
+  "db_adapter",
+  "dialogs",
+  "digit_ocr",
+  "final_file",
+  "geometry",
+  "logging_utils",
+  "map_analysis",
+  "site_model",
+  "subject_analysis",
+  "tc_analysis",
+  "voronoi_picker",
+]
