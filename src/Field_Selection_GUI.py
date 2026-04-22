@@ -521,14 +521,10 @@ class FieldSelectionGUI(BoxLayout):
         self.load_popup_label = None
         self._syncing_plot_flag_toggles = False
 
-        self.vor_df = None
-        self.dense_df = None
-
         # Start with marks_active. Can be set to False before loading a map by
         # hitting the Show Fields button
         self.marks_active = True
 
-        self.map_num = None
         self.plot_dict = {}
         self.vor_lines = {}
         self.vor_meshes = {}
@@ -566,7 +562,6 @@ class FieldSelectionGUI(BoxLayout):
                              zip(self.fields, colors)}
         self.field_line_colors = {field: color for field, color in 
                                   zip(self.fields, line_colors)}
-        self.vor_file = ""
 
         # Arrange GUI
         tools = StackLayout(orientation="lr-tb", size_hint=(0.075, 1))
