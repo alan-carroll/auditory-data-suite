@@ -12,6 +12,7 @@ os.environ.setdefault("KIVY_NO_FILELOG", "1")
 import logging
 
 from logging_utils import configure_file_logging, install_excepthooks
+from compat import install_distutils_version_shim
 
 configure_file_logging("map_gui_log.log", level=logging.ERROR)
 install_excepthooks()
@@ -23,6 +24,8 @@ import numpy as np
 import matplotlib
 # Pin non-interactive backend prior to importing kivy
 matplotlib.use("Agg")
+# kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
+install_distutils_version_shim()
 from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
@@ -59,7 +62,8 @@ logging.getLogger("kivy").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
-Window.clearcolor = (1, 1, 1, 1)
+if Window is not None:
+    Window.clearcolor = (1, 1, 1, 1)
 
 
 class FieldSelectionApp(App):
