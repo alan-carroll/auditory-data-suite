@@ -247,6 +247,7 @@ class SiteScreen(Screen):
         # Listen for user changes to analysis
         self.densetc_plot.on_changes_signal.connect(self.changes_made)
         self.densetc_plot.on_cf_pick_signal.connect(self.cf_picked)
+        self._syncing_plot_flag_checkbox = False
         
     def redraw(self):
         """Re-draw plots."""
@@ -258,17 +259,32 @@ class SiteScreen(Screen):
         Shared handler for the five TC-display checkboxes. Each flips
         one boolean on the detail SitePlot and redraws; which boolean
         is looked up from the checkbox instance.
-
-        TODO Fix mutually exclusive drawing flags
         """
+        if self._syncing_plot_flag_checkbox:
+            return
+
         attr = self._plot_flag_checkboxes[checkbox]
-        setattr(self.densetc_plot, attr, checked)
-        if attr in ("use_lineplot", "use_heatmap"):
-            self.bubble_slider.disabled = checked
+
+        if attr == "use_lineplot":
+            self.densetc_plot.use_lineplot = checked
             if checked:
-                other = ("use_heatmap" if attr == "use_lineplot"
-                         else "use_lineplot")
-                setattr(self.densetc_plot, other, False)
+                self.densetc_plot.use_heatmap = False
+                self._syncing_plot_flag_checkbox = True
+                self.heatmap_checkbox.active = False
+                self._syncing_plot_flag_checkbox = False
+        elif attr == "use_heatmap":
+            self.densetc_plot.use_heatmap = checked
+            if checked:
+                self.densetc_plot.use_lineplot = False
+                self._syncing_plot_flag_checkbox = True
+                self.lineplot_checkbox.active = False
+                self._syncing_plot_flag_checkbox = False
+        else:
+            setattr(self.densetc_plot, attr, checked)
+
+        self.bubble_slider.disabled = (
+            self.densetc_plot.use_lineplot or self.densetc_plot.use_heatmap
+        )
         self.redraw()
 
     def on_mark_toggle(self, _event):
@@ -503,6 +519,7 @@ class FieldSelectionGUI(BoxLayout):
         self._rendered_sites = 0
         self.load_popup = None
         self.load_popup_label = None
+        self._syncing_plot_flag_toggles = False
 
         self.vor_df = None
         self.dense_df = None
@@ -1065,10 +1082,37 @@ class FieldSelectionGUI(BoxLayout):
 
     def _on_plot_flag_toggle(self, toggle):
         """Shared handler for the map-wide TC display toggles."""
+        if self._syncing_plot_flag_toggles:
+            return
+
         attr = self._plot_flag_toggles[toggle]
         value = (toggle.state == "down")
+
+        if attr == "use_lineplot" and value:
+            self._syncing_plot_flag_toggles = True
+            self.toggle_heatmap.state = "normal"
+            self._syncing_plot_flag_toggles = False
+        elif attr == "use_heatmap" and value:
+            self._syncing_plot_flag_toggles = True
+            self.toggle_lineplot.state = "normal"
+            self._syncing_plot_flag_toggles = False
+
         for plot in self.plot_dict.values():
-            setattr(plot, attr, value)
+            if attr == "use_lineplot":
+                plot.use_lineplot = value
+                if value:
+                    plot.use_heatmap = False
+            elif attr == "use_heatmap":
+                plot.use_heatmap = value
+                if value:
+                    plot.use_lineplot = False
+            else:
+                setattr(plot, attr, value)
+
+        self.map_bubble_slider.disabled = (
+            self.toggle_lineplot.state == "down" or
+            self.toggle_heatmap.state == "down"
+        )
         self._redraw_all_plots()
 
     def on_psth_ylim(self, _spinner, text):
