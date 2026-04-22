@@ -6,14 +6,10 @@ from pathlib import Path
 import cli_utils as cli
 from dialogs import get_file, save_file, load_analysis
 from db_adapter import JSONStore
+from field_definitions import FIELD_EXPORT_CODES
 from tc_analysis import BW_LEVELS
 
 __all__ = ["create_final_file"]
-
-# Auditory field name -> integer code used by the v-plot final-file format.
-# TODO unify with GUI
-_FIELD_CODES = {"": 0, "A1": 0, "AAF": 1, "PAF": 2, "Other": 3,
-                "VAF": 4, "NAR": 5, "SRAF": 6}
 
 def create_final_file(ic_bool=False):
     """
@@ -84,7 +80,7 @@ def create_final_file(ic_bool=False):
         else:
             analysis_entry = analysis_df[site_number]
         
-        field = _FIELD_CODES[analysis_entry["field_assignment"]]
+        field = FIELD_EXPORT_CODES[analysis_entry["field_assignment"]]
         
         if ic_bool:
             electrode = site_number % 2

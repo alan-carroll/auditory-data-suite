@@ -25,6 +25,7 @@ from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
 import cmocean
 from db_adapter import JSONStore
+from field_definitions import FIELD_FILL_COLORS, FIELD_LINE_COLORS, GUI_FIELDS
 from site_model import SiteModel, StimConfig
 
 # kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
@@ -530,33 +531,10 @@ class FieldSelectionGUI(BoxLayout):
         self.unsaved_line_color = "#f7022a"  # xkcd:cherry red
         self.unsaved_mesh_color = "#cfff04"  # xkcd:neon yellow
 
-        self.fields = ("A1", "VAF", "PAF", "AAF", "SRAF", "NAR", "Other", 
-                       "Mark")
-        colors = [
-            "#3e82fc",  # A1 : xkcd:dodger blue
-            "#ffff81",  # VAF : xkcd:butter
-            "#90fda9",  # PAF : xkcd:foam green
-            "#fc86aa",  # AAF : xkcd:pinky
-            "#edc8ff",  # SRAF : xkcd:light lilac
-            "#5a7d9a",  # NAR : xkcd:steel blue
-            "#b04e0f",  # Other : xkcd:burnt sienna
-            "#c1fd95",  # Mark: xkcd:celery
-        ]
-        line_colors = [
-            "#0348c9",  # A1
-            "#ffff00",  # VAF
-            "#37fb65",  # PAF
-            "#fa3872",  # AAF
-            "#c44dff",  # SRAF
-            "#394e60",  # NAR
-            "#5e2908",  # Other
-            "#60dc04",  # Mark
-        ]
+        self.fields = GUI_FIELDS
         self.map_sets = {field: set() for field in self.fields}
-        self.field_colors = {field: color for field, color in 
-                             zip(self.fields, colors)}
-        self.field_line_colors = {field: color for field, color in 
-                                  zip(self.fields, line_colors)}
+        self.field_colors = FIELD_FILL_COLORS
+        self.field_line_colors = FIELD_LINE_COLORS
 
         # Arrange GUI
         tools = StackLayout(orientation="lr-tb", size_hint=(0.075, 1))
