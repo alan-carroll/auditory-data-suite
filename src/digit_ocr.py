@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Optional
 import warnings
 
 _NORM_SIZE = (48, 32)
@@ -10,7 +11,7 @@ _NORM_SIZE = (48, 32)
 class OCRResult:
     """Single number recognition outcome."""
     crop: np.ndarray
-    number: int | None = None
+    number: Optional[int] = None
     confidence: float = 0.0
     metadata: dict = field(default_factory=dict)
 

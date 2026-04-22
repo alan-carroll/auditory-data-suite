@@ -11,7 +11,7 @@ Controls:
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 from scipy.spatial import QhullError, Voronoi
@@ -27,7 +27,7 @@ _VIEW_BOUNDS = box(0.0, 0.0, 1.0, 1.0)
 _POINT_EPS = 1e-9
 
 
-def _to_array(points: Iterable[Iterable[float]] | None) -> np.ndarray:
+def _to_array(points: Optional[Iterable[Iterable[float]]]) -> np.ndarray:
     """Normalize optional point inputs to an Nx2 float array."""
     if points is None:
         return np.empty((0, 2), dtype=np.float64)
@@ -81,7 +81,7 @@ def _cell_colors(real_count: int, buffer_count: int, has_preview: bool) -> list[
     return colors
 
 
-def _voronoi_finite_polygons_2d(vor: Voronoi, radius: float | None = None):
+def _voronoi_finite_polygons_2d(vor: Voronoi, radius: Optional[float] = None):
     """Reconstruct infinite Voronoi regions into finite polygons.
 
     Adapted from the SciPy Voronoi finite polygons recipe.
@@ -193,8 +193,8 @@ class Picker:
             self,
             size: tuple[int, int] = (600, 600),
             title: str = "Voronoi Picker",
-            input_points: Iterable[Iterable[float]] | None = None,
-            buffer_points: Iterable[Iterable[float]] | None = None):
+            input_points: Optional[Iterable[Iterable[float]]] = None,
+            buffer_points: Optional[Iterable[Iterable[float]]] = None):
         self.width = max(200, int(size[0]))
         self.height = max(200, int(size[1]))
         self.root = tk.Tk()
