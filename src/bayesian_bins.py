@@ -2,7 +2,6 @@ from llvmlite import binding
 binding.set_option('SVML', '-vector-library=SVML')
 
 import numpy as np
-import scipy.special as ss
 from scipy.optimize import minimize_scalar
 import numba as nb
 import ctypes
