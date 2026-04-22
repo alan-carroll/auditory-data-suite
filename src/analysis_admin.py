@@ -6,13 +6,20 @@ from colorama import Back
 
 import cli_utils as cli
 from dialogs import save_file, ask_string, confirm
-from stim_types import ALL_STIM_TYPES
 
 __all__ = [
     "create_config_file",
     "build_analysis_metadata", "new_analysis_metadata_document",
     "create_new_densetc_analysis",
 ]
+
+
+def _all_stim_types():
+    # Imported lazily to avoid the stim_types -> densetc ->
+    # analysis_functions -> analysis_admin -> stim_types circular import
+    # during package initialization.
+    from stim_types import ALL_STIM_TYPES
+    return ALL_STIM_TYPES
 
 def create_config_file():
     """
@@ -41,7 +48,7 @@ def create_config_file():
         "config_id": uuid.uuid4().hex,
     }
 
-    for stim in ALL_STIM_TYPES:
+    for stim in _all_stim_types():
         stim.prompt(config_dict)
 
     if cli.ask_yes_no("Will this project use any IC maps [y/n]? > "):
