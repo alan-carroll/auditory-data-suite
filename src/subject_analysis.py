@@ -172,6 +172,42 @@ def choose_csv_save_path(initial_dir, initial_name):
     return save_path
 
 
+def choose_json_save_path(initial_dir, initial_name):
+    save_path = afunc.save_file(
+        title="Save subject database JSON",
+        defaultextension=".json",
+        initialdir=str(initial_dir),
+        initialfile=initial_name,
+        filetypes=[("JSON", ".json")],
+    )
+    if not save_path:
+        return None
+    return _normalize_output_path(save_path, ".json")
+
+
+def resolve_subject_db_path(save_dir_path, subject_name):
+    db_path = _normalize_output_path(Path(save_dir_path) / subject_name, ".json")
+
+    while db_path.exists():
+        cli.warn(f"Subject database already exists: {db_path}")
+        choice = cli.ask_choice(
+            "Choose [o]verwrite, [r]ename, or [c]ancel > ",
+            ("o", "r", "c"),
+        )
+        if choice == "o":
+            return db_path, True
+        if choice == "c":
+            return None, False
+
+        renamed_path = choose_json_save_path(db_path.parent, db_path.name)
+        if renamed_path is None:
+            cli.warn("Rename canceled. Pick another option.")
+            continue
+        db_path = renamed_path
+
+    return db_path, False
+
+
 def bootstrap_digit_templates():
     template_path = choose_template_save_path()
     if template_path is None:
@@ -249,9 +285,21 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     analysis_version = f"map_auto_analysis v{version}"
     today = str(datetime.datetime.now())
     subject_name = input("What is the subject's name? > ").strip()
+    if not subject_name:
+        cli.warn("Analysis canceled because the subject name was blank.")
+        return False
 
     cli.info("Select folder to save to: ")
     save_dir_path = afunc.get_folder(title="Folder to save to")
+    if not save_dir_path:
+        cli.warn("Analysis canceled before choosing a save folder.")
+        return False
+
+    db_path, overwrite_existing = resolve_subject_db_path(save_dir_path,
+                                                          subject_name)
+    if db_path is None:
+        cli.warn("Analysis canceled before writing a subject database.")
+        return False
 
     use_f32 = False
     file_type = cli.ask_choice("Using .[s]rc or .[f]32 file type? > ",
@@ -290,7 +338,11 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         if image_or_point_list == "i":
             use_images = True
 
-    db = JSONStore(save_dir_path + subject_name)
+    if overwrite_existing:
+        db_path.unlink()
+        cli.warn(f"Overwriting existing subject database at {db_path}")
+
+    db = JSONStore(db_path)
     db_metadata = db.metadata
     db_sites = db.sites
     db_analysis_metadata = db.analysis_metadata
@@ -452,3 +504,4 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         _route_and_insert(results, stim, db, ic_bool, ic_pens, ic_points_df)
 
     db.close()
+    return True
