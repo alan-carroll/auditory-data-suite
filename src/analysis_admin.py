@@ -119,37 +119,12 @@ def create_new_densetc_analysis(template_id, new_metadata,
                                 densetc_analysis_collection, 
                                 bonus_analysis_collection):
     """
-    Create a new analysis for a subject.
-    Adds metadata and duplicates entries from an existing analysis.
-    
-    Expects a dictionary of new analysis metadata and the analysis metadata and
-      densetc_analysis tinydb "mongo" collections to update. Duplicates existing 
-      analysis and replaces id with new analysis id.
-      
-    Returns new analysis_metadata _id.
+    Create a new analysis by inserting metadata and cloning the matching
+    analysis docs from the main and bonus collections onto the new ID.
     """
-    # TODO allow blank analysis, with just empty fields
     analysis_id = analysis_metadata_collection.insert_one(
         new_metadata).inserted_id
-    # NEW: Must wrap dict(site), stupid tinydb change. Won't insert otherwise.
-    #  https://github.com/msiemens/tinydb/issues/354
-    template_analysis = [
-        dict(site) for site in 
-        densetc_analysis_collection.find({"analysis_id": template_id})]
-    # If there are no IC/cortical sites, an empty collection is created in the 
-    #   database, harming no one
-    # If there are, they are duplicated like expected and can be accessed from
-    #   the same analysis ID
-    bonus_analysis = [
-        dict(site) for site in 
-        bonus_analysis_collection.find({"analysis_id": template_id})]
-    for site in template_analysis:
-        site["analysis_id"] = analysis_id
-        del site["_id"]
-    for site in bonus_analysis:
-        site["analysis_id"] = analysis_id
-        del site["_id"]
-    densetc_analysis_collection.insert_many(template_analysis)
-    bonus_analysis_collection.insert_many(bonus_analysis)
-    
+    densetc_analysis_collection.clone_by("analysis_id", template_id,
+                                         analysis_id)
+    bonus_analysis_collection.clone_by("analysis_id", template_id, analysis_id)
     return analysis_id
