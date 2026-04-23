@@ -193,8 +193,20 @@ def _action_generate_from_final(state):
                     "onset","offset","x","y","field","number",]
         map_df = pd.read_excel(file, header=None, usecols=usecols,
                                names=colnames, engine="openpyxl")
-        subject_analysis.run_program(state.config_dict, state.version,
-                                     final_file=map_df, return_sdf=return_sdf)
+        run_ctx = subject_analysis.prepare_run_context(
+            state.config_dict,
+            state.version,
+            final_file_df=map_df,
+            return_sdf=return_sdf,
+        )
+        if run_ctx is None:
+            return
+        try:
+            completed = subject_analysis.run_brainware_analysis(run_ctx)
+            if completed:
+                cli.banner("\nIt's over! :)\n\n")
+        finally:
+            run_ctx.db.close()
     except Exception as e:
         cli.fail(e, f"Final-file generation crashed: {e}\n"
                     "Traceback in check_after_crash.log.")

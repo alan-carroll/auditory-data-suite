@@ -19,6 +19,13 @@ def _run_smoke(session: nox.Session) -> None:
     session.run("python", str(Path("scripts") / "smoke_imports.py"))
 
 
+@nox.session(name="tests", python=SUPPORTED_PYTHONS)
+def tests(session: nox.Session) -> None:
+    session.install("-e", ".")
+    session.install("pytest")
+    session.run("pytest")
+
+
 @nox.session(name="smoke", python=SUPPORTED_PYTHONS)
 def smoke(session: nox.Session) -> None:
     _run_smoke(session)

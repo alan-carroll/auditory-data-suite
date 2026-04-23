@@ -85,7 +85,7 @@ class StimulusType(ABC):
             self.store_config(config_dict, df)
             return
 
-    def worker_kwargs(self, config_dict, analysis_id=None, final_file=None,
+    def worker_kwargs(self, config_dict, analysis_id=None, final_file_df=None,
                       return_sdf=True):
         return {}
 

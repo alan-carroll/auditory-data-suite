@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
+from dataclasses import dataclass
 import pandas as pd
 from skimage.measure import label, regionprops
 import datetime
@@ -20,6 +21,36 @@ RESOURCES = Path(__file__).resolve().parent.parent / "resources"
 TEMPLATE_FILE = RESOURCES / "digit_templates.npz"
 FONT_FILE = RESOURCES / "OCR-A.otf"
 FONT_EXTENSIONS = (".ttf", ".otf")
+
+
+@dataclass(slots=True)
+class RunContext:
+    config_dict: dict
+    version: str
+    analysis_version: str
+    subject_name: str
+    save_dir_path: Path
+    db_path: Path
+    db: JSONStore
+    meta_id: str
+    analysis_id: str
+    use_f32: bool
+    ic_bool: bool
+    ic_only: bool
+    ic_points_df: pd.DataFrame
+    final_file_df: pd.DataFrame | None
+    return_sdf: bool
+
+
+@dataclass(slots=True)
+class MapData:
+    map_points_df: pd.DataFrame
+    map_width: int = 1
+    map_height: int = 1
+
+
+def _empty_number_df():
+    return pd.DataFrame([{"number": None}])
 
 
 def default_digit_ocr_source():
@@ -267,7 +298,7 @@ def _gather_brainware_files(dir_path, enabled_stims, use_f32, nums, ic_pens,
     for stim in enabled_stims:
         pattern = stim.file_prefix(config_dict)
         files = [
-            bw_io(filename=dir_path + entry.name)
+            bw_io(filename=entry.path)
             for entry in os.scandir(dir_path)
             if entry.name.endswith(ext)
             and entry.name.startswith(pattern)
@@ -281,25 +312,81 @@ def _gather_brainware_files(dir_path, enabled_stims, use_f32, nums, ic_pens,
     return bw_files
 
 
-def run_program(config_dict, version, final_file=None, return_sdf=True):
+@ray.remote
+def _analyze_stimulus_file(stim, idx, file, total, use_f32, ic_pens,
+                           worker_kwargs):
+    try:
+        return stim.analyze_file(
+            idx=idx,
+            file=file,
+            total=total,
+            use_f32=use_f32,
+            ic_pens=ic_pens,
+            **worker_kwargs,
+        )
+    except Exception as e:
+        file_name = getattr(file, "_filename", None)
+        if file_name is None:
+            file_name = getattr(file, "filename", "<unknown file>")
+        raise RuntimeError(
+            f"{stim.key} analysis failed for file {file_name!r} at worker "
+            f"index {idx} of {total}"
+        ) from e
+
+
+def _prompt_ic_map_options(config_dict):
+    ic_bool = False
+    ic_only = False
+    ic_points_df = _empty_number_df()
+
+    if not config_dict["do_IC"]:
+        return ic_bool, ic_only, ic_points_df
+
+    if not cli.ask_yes_no("Does this subject have IC data [y/n]? > "):
+        return ic_bool, ic_only, ic_points_df
+
+    ic_bool = True
+    cli.info(
+        "Select .csv file listing IC map Penetration numbers with "
+        "corresponding depths (Number,Depth, no headers): "
+    )
+    ic_csv = afunc.get_file(title="IC Num,Depth .csv",
+                            filetypes=[("CSV", ".csv")])
+    if not ic_csv:
+        cli.warn("Analysis canceled before choosing an IC depth file.")
+        return None
+
+    ic_points_df = pd.read_csv(ic_csv, header=None,
+                               names=["number", "depth"])
+    ic_points_df = ic_points_df.sort_values("number").reset_index(drop=True)
+
+    if cli.ask_yes_no("Is this an IC only map [y/n]? > "):
+        ic_only = True
+
+    return ic_bool, ic_only, ic_points_df
+
+
+def prepare_run_context(config_dict, version, final_file_df=None,
+                        return_sdf=True):
     analysis_version = f"map_auto_analysis v{version}"
     today = str(datetime.datetime.now())
     subject_name = input("What is the subject's name? > ").strip()
     if not subject_name:
         cli.warn("Analysis canceled because the subject name was blank.")
-        return False
+        return None
 
     cli.info("Select folder to save to: ")
     save_dir_path = afunc.get_folder(title="Folder to save to")
     if not save_dir_path:
         cli.warn("Analysis canceled before choosing a save folder.")
-        return False
+        return None
+    save_dir_path = Path(save_dir_path)
 
     db_path, overwrite_existing = resolve_subject_db_path(save_dir_path,
                                                           subject_name)
     if db_path is None:
         cli.warn("Analysis canceled before writing a subject database.")
-        return False
+        return None
 
     use_f32 = False
     file_type = cli.ask_choice("Using .[s]rc or .[f]32 file type? > ",
@@ -307,36 +394,10 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     if file_type == "f":
         use_f32 = True
 
-    ic_bool = False
-    ic_only = False
-    use_images = False
-    image_or_point_list = None
-    ic_points_df = pd.DataFrame([{"number": None}])
-    if config_dict["do_IC"]:
-        if cli.ask_yes_no("Does this subject have IC data [y/n]? > "):
-            ic_bool = True
-            cli.info(
-                "Select .csv file listing IC map Penetration numbers with "
-                "corresponding depths (Number,Depth, no headers): "
-            )
-            ic_csv = afunc.get_file(title="IC Num,Depth .csv",
-                                    filetypes=[("CSV", ".csv")])
-            ic_points_df = pd.read_csv(ic_csv, header=None,
-                                       names=["number", "depth"])
-            ic_points_df = ic_points_df.sort_values("number")
-            ic_points_df.reset_index(inplace=True, drop=True)
-
-            if cli.ask_yes_no("Is this an IC only map [y/n]? > "):
-                ic_only = True
-
-    image_or_point_list = ""
-    if (not ic_only) and (final_file is None):
-        image_or_point_list = cli.ask_choice(
-            "Using [i]mages, [f]inal file, or .[c]sv for map point data? > ",
-            ("i", "f", "c")
-        )
-        if image_or_point_list == "i":
-            use_images = True
+    ic_options = _prompt_ic_map_options(config_dict)
+    if ic_options is None:
+        return None
+    ic_bool, ic_only, ic_points_df = ic_options
 
     if overwrite_existing:
         db_path.unlink()
@@ -344,7 +405,6 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
 
     db = JSONStore(db_path)
     db_metadata = db.metadata
-    db_sites = db.sites
     db_analysis_metadata = db.analysis_metadata
 
     meta_id = db_metadata.insert_one({
@@ -352,7 +412,7 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         "program_run_date": today,
         "project_configuration": config_dict,
     }).inserted_id
-    if final_file is not None:
+    if final_file_df is not None:
         analysis_comment = "Tuning curve analysis generated from a final file"
     else:
         analysis_comment = "Auto tuning curve analysis and data pre-processing"
@@ -364,118 +424,218 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         "comments": analysis_comment,
     }).inserted_id
 
-    map_width = 1
-    map_height = 1
-    map_points_df = pd.DataFrame([{"number": None}])
-    if use_images:
-        source_path = prompt_digit_ocr_source()
-        OCR = load_digit_ocr(source_path)
+    return RunContext(
+        config_dict=config_dict,
+        version=version,
+        analysis_version=analysis_version,
+        subject_name=subject_name,
+        save_dir_path=save_dir_path,
+        db_path=db_path,
+        db=db,
+        meta_id=meta_id,
+        analysis_id=analysis_id,
+        use_f32=use_f32,
+        ic_bool=ic_bool,
+        ic_only=ic_only,
+        ic_points_df=ic_points_df,
+        final_file_df=final_file_df,
+        return_sdf=return_sdf,
+    )
 
-        _, points_image = _load_grayscale_image(
-            "Select Map Points image", "Select map POINTS image:"
+
+def _map_dimension_from_coords(values):
+    dimension = values.max() * 1000
+    return int(dimension + (dimension * 0.1))
+
+
+def _ingest_map_points_from_images(run_ctx):
+    source_path = prompt_digit_ocr_source()
+    if source_path is None:
+        cli.warn("Analysis canceled before choosing an OCR source.")
+        return None
+    ocr = load_digit_ocr(source_path)
+
+    _, points_image = _load_grayscale_image(
+        "Select Map Points image", "Select map POINTS image:"
+    )
+    if points_image is None:
+        cli.warn("Analysis canceled before choosing a map points image.")
+        return None
+    points_binary = points_image < 128
+    points_label = label(points_binary)
+    points_regions = regionprops(points_label)
+
+    number_data = load_number_mask_data()
+    if number_data is None:
+        cli.warn("Analysis canceled before choosing map numbers/mask images.")
+        return None
+    numbers_image = number_data["numbers_image"]
+    norm_row_max, norm_col_max = numbers_image.shape
+    mask_regions = number_data["mask_regions"]
+    number_crops = number_data["number_crops"]
+
+    if len(mask_regions) != len(points_regions):
+        raise AssertionError(
+            "Unequal number of Points and Numbers.\n "
+            "Were these files made correctly?"
         )
-        if points_image is None:
-            raise FileNotFoundError("No map points image selected.")
-        points_binary = points_image < 128
-        points_label = label(points_binary)
-        points_regions = regionprops(points_label)
 
-        number_data = load_number_mask_data()
-        if number_data is None:
-            raise FileNotFoundError("Map numbers/mask image selection was canceled.")
-        numbers_image = number_data["numbers_image"]
-        norm_row_max, norm_col_max = numbers_image.shape
-        mask_regions = number_data["mask_regions"]
-        number_crops = number_data["number_crops"]
+    map_height, map_width = points_image.shape
+    points_centroids = np.array([r.centroid for r in points_regions])
+    results = []
+    for mask_props, crop in zip(mask_regions, number_crops):
+        ocr_result = ocr.recognize(crop)
 
-        if len(mask_regions) != len(points_regions):
-            raise AssertionError(
-                "Unequal number of Points and Numbers.\n "
-                "Were these files made correctly?"
-            )
+        distances = np.linalg.norm(
+            points_centroids - np.array(mask_props.centroid), axis=1)
+        point = points_centroids[np.argmin(distances)]
+        ocr_result.metadata["x"] = point[1] / norm_col_max
+        ocr_result.metadata["y"] = 1 - (point[0] / norm_row_max)
+        results.append(ocr_result)
 
-        map_height, map_width = points_image.shape
-        points_centroids = np.array([r.centroid for r in points_regions])
-        results = []
-        for mask_props, crop in zip(mask_regions, number_crops):
-            ocr_result = OCR.recognize(crop)
+    ocr.review_results(results)
+    if cli.ask_yes_no("Save coordinates to .csv file [y/n]? > "):
+        csv_path = choose_csv_save_path(
+            run_ctx.save_dir_path, f"{run_ctx.subject_name}_coords.csv"
+        )
+        if csv_path is None:
+            cli.warn("CSV export canceled.")
+        else:
+            ocr.export_results_csv(results, csv_path)
 
-            distances = np.linalg.norm(
-                points_centroids - np.array(mask_props.centroid), axis=1)
-            point = points_centroids[np.argmin(distances)]
-            ocr_result.metadata["x"] = point[1] / norm_col_max
-            ocr_result.metadata["y"] = 1 - (point[0] / norm_row_max)
-            results.append(ocr_result)
-
-        OCR.review_results(results)
-        if cli.ask_yes_no("Save coordinates to .csv file [y/n]? > "):
-            csv_path = choose_csv_save_path(
-                save_dir_path, f"{subject_name}_coords.csv"
-            )
-            if csv_path is None:
-                cli.warn("CSV export canceled.")
-            else:
-                OCR.export_results_csv(results, csv_path)
-        map_points_df = pd.DataFrame(
+    return MapData(
+        map_points_df=pd.DataFrame(
             [{"number": r.number, "x": r.metadata["x"], "y": r.metadata["y"]}
              for r in results]
-        )
+        ),
+        map_width=map_width,
+        map_height=map_height,
+    )
 
-    elif not ic_only:
-        if image_or_point_list == "f":
-            cli.info(
-                "Select spreadsheet containing 'final file' format data:"
-            )
-            coords_sheet = afunc.get_file(title="Select final file",
-                                          filetypes=[("Excel workbook", ".xlsx")])
-            map_points_df = pd.read_excel(coords_sheet,
-                                          header=None,
-                                          usecols=[40, 41, 43],
-                                          names=["x", "y", "number"],
-                                          engine="openpyxl")
-        elif image_or_point_list == "c":
-            cli.info("Select .csv file with cols number,x,y (no headers):")
-            coords_sheet = afunc.get_file(title="Select Map number,x,y file",
-                                          filetypes=[("CSV", ".csv")])
-            map_points_df = pd.read_csv(coords_sheet,
-                                        header=None,
-                                        names=["number", "x", "y"])
 
-        map_width = map_points_df.x.max() * 1000
-        map_width = int(map_width + (map_width * 0.1))
-        map_height = map_points_df.y.max() * 1000
-        map_height = int(map_height + (map_height * 0.1))
+def _ingest_map_points_from_final_sheet():
+    cli.info("Select spreadsheet containing 'final file' format data:")
+    coords_sheet = afunc.get_file(title="Select final file",
+                                  filetypes=[("Excel workbook", ".xlsx")])
+    if not coords_sheet:
+        return None
 
-    db_metadata.update_one({"_id": meta_id},
-                           {"$set": {"map_height": map_height,
-                                     "map_width": map_width}})
+    map_points_df = pd.read_excel(coords_sheet,
+                                  header=None,
+                                  usecols=[40, 41, 43],
+                                  names=["x", "y", "number"],
+                                  engine="openpyxl")
+    return MapData(
+        map_points_df=map_points_df,
+        map_width=_map_dimension_from_coords(map_points_df.x),
+        map_height=_map_dimension_from_coords(map_points_df.y),
+    )
 
-    if not ic_only:
-        max_coor = map_points_df[["x", "y"]].max().values.max()
-        map_points_df[["x", "y"]] = map_points_df[["x", "y"]].apply(
-            lambda x: afunc.scale_coordinates(input_coor=x,
-                                              min_coor=0,
-                                              max_coor=max_coor,
-                                              min_scale=0.1,
-                                              max_scale=0.9))
 
-        print("Working on voronoi data...")
-        sites_list, bonus_pts = afunc.pick_voronoi(map_points_df,
-                                                   map_width, map_height)
-        cli.success("Saving map sites / voronoi data ... \n\n")
-        db_sites.insert_many(sites_list)
+def _ingest_map_points_from_csv():
+    cli.info("Select .csv file with cols number,x,y (no headers):")
+    coords_sheet = afunc.get_file(title="Select Map number,x,y file",
+                                  filetypes=[("CSV", ".csv")])
+    if not coords_sheet:
+        return None
+
+    map_points_df = pd.read_csv(coords_sheet,
+                                header=None,
+                                names=["number", "x", "y"])
+    return MapData(
+        map_points_df=map_points_df,
+        map_width=_map_dimension_from_coords(map_points_df.x),
+        map_height=_map_dimension_from_coords(map_points_df.y),
+    )
+
+
+def _persist_map_data(run_ctx, map_data):
+    run_ctx.db.metadata.update_one(
+        {"_id": run_ctx.meta_id},
+        {"$set": {"map_height": map_data.map_height,
+                  "map_width": map_data.map_width}},
+    )
+
+    if run_ctx.ic_only:
+        return map_data
+
+    scaled_map_points_df = map_data.map_points_df.copy()
+    max_coor = scaled_map_points_df[["x", "y"]].max().values.max()
+    scaled_map_points_df[["x", "y"]] = scaled_map_points_df[["x", "y"]].apply(
+        lambda x: afunc.scale_coordinates(input_coor=x,
+                                          min_coor=0,
+                                          max_coor=max_coor,
+                                          min_scale=0.1,
+                                          max_scale=0.9))
+
+    print("Working on voronoi data...")
+    sites_list, _ = afunc.pick_voronoi(scaled_map_points_df,
+                                       map_data.map_width,
+                                       map_data.map_height)
+    cli.success("Saving map sites / voronoi data ... \n\n")
+    run_ctx.db.sites.insert_many(sites_list)
+    return MapData(
+        map_points_df=scaled_map_points_df,
+        map_width=map_data.map_width,
+        map_height=map_data.map_height,
+    )
+
+
+def ingest_map_points(run_ctx):
+    if run_ctx.ic_only:
+        return _persist_map_data(run_ctx, MapData(map_points_df=_empty_number_df()))
+
+    map_point_source = cli.ask_choice(
+        "Using [i]mages, [f]inal file, or .[c]sv for map point data? > ",
+        ("i", "f", "c")
+    )
+    if map_point_source == "i":
+        map_data = _ingest_map_points_from_images(run_ctx)
+    elif map_point_source == "f":
+        map_data = _ingest_map_points_from_final_sheet()
+    else:
+        map_data = _ingest_map_points_from_csv()
+
+    if map_data is None:
+        cli.warn("Analysis canceled before loading map-point data.")
+        return None
+
+    return _persist_map_data(run_ctx, map_data)
+
+
+def _analysis_numbers(run_ctx, map_data):
+    if run_ctx.final_file_df is not None:
+        return run_ctx.final_file_df.number.values
+    if map_data is not None:
+        return map_data.map_points_df.number.values
+    return _empty_number_df().number.values
+
+
+def run_brainware_analysis(run_ctx, map_data=None):
+    config_dict = run_ctx.config_dict
+    use_f32 = run_ctx.use_f32
+    analysis_id = run_ctx.analysis_id
+    final_file_df = run_ctx.final_file_df
+    return_sdf = run_ctx.return_sdf
+    ic_bool = run_ctx.ic_bool
+    ic_points_df = run_ctx.ic_points_df
+    db = run_ctx.db
 
     cli.info(
         "Select dir containing all Brainware files for subject"
         "(subfolders will be skipped):"
     )
     dir_path = afunc.get_folder(title="Select Brainware data dir")
+    if not dir_path:
+        cli.warn("Analysis canceled before choosing a Brainware data folder.")
+        return False
 
-    nums = map_points_df.number.values
+    nums = _analysis_numbers(run_ctx, map_data)
     ic_pens = ic_points_df.number.values if ic_bool else []
     enabled_stims = enabled_stim_types(config_dict)
-    bw_files = _gather_brainware_files(dir_path, enabled_stims, use_f32,
-                                       nums, ic_pens, config_dict)
+    bw_files = _gather_brainware_files(dir_path, enabled_stims,
+                                       use_f32, nums, ic_pens,
+                                       config_dict)
 
     for stim in enabled_stims:
         files = bw_files.get(stim.key)
@@ -486,24 +646,35 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         worker_kwargs = stim.worker_kwargs(
             config_dict,
             analysis_id=analysis_id,
-            final_file=final_file,
+            final_file_df=final_file_df,
             return_sdf=return_sdf,
         )
-
-        @ray.remote
-        def worker(idx, file):
-            return stim.analyze_file(
-                idx=idx,
-                file=file,
-                total=total,
-                use_f32=use_f32,
-                ic_pens=ic_pens,
-                **worker_kwargs,
+        results = ray.get([
+            _analyze_stimulus_file.remote(
+                stim, i, f, total, use_f32, ic_pens, worker_kwargs
             )
-
-        results = ray.get([worker.remote(i, f) for i, f in enumerate(files)])
+            for i, f in enumerate(files)
+        ])
         cli.success(f"\nSaving {stim.label} data...")
         _route_and_insert(results, stim, db, ic_bool, ic_pens, ic_points_df)
 
-    db.close()
     return True
+
+
+def run_program(config_dict, version, final_file_df=None, return_sdf=True):
+    run_ctx = prepare_run_context(config_dict, version,
+                                  final_file_df=final_file_df,
+                                  return_sdf=return_sdf)
+    if run_ctx is None:
+        return False
+
+    try:
+        map_data = None
+        if run_ctx.final_file_df is None:
+            map_data = ingest_map_points(run_ctx)
+            if map_data is None:
+                return False
+
+        return run_brainware_analysis(run_ctx, map_data=map_data)
+    finally:
+        run_ctx.db.close()
