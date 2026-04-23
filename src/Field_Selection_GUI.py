@@ -9,29 +9,86 @@ os.environ.setdefault("KIVY_LOG_MODE", "PYTHON")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 os.environ.setdefault("KIVY_NO_FILELOG", "1")
 
+# Non-interactive MPL backend
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import logging
+import itertools
+from collections import namedtuple
 
 from logging_utils import configure_file_logging, install_excepthooks
 from compat import install_distutils_version_shim
+import numpy as np
+from matplotlib import colors as mpl_colors, colormaps as mpl_colormaps
+from matplotlib.collections import LineCollection
+from matplotlib.figure import Figure
+from matplotlib.path import Path as MplPath
+import cmocean
+from db_adapter import JSONStore
+from field_definitions import (
+    FIELD_FILL_COLORS,
+    FIELD_LINE_COLORS,
+    FIELD_NAMES,
+    GUI_FIELDS,
+    MARK_FIELD,
+)
+from site_model import SiteModel, StimConfig
+
+# GUI tuning constants
+WINDOW_MIN_SIZE = (1500, 950)
+IC_PSEUDO_MAP_SIZE = (3000, 1000)  # height, width
+
+TOOLS_PANEL_WIDTH_HINT = 0.075
+MAP_REDUCED_SCALE = (0.1, 0.9)
+
+LOAD_POPUP_SIZE = (360, 140)
+LOAD_POPUP_FONT_SIZE = "26sp"
+MAP_BATCH_SIZE = 4
+MAP_BATCH_DELAY_S = 0.01
+LOAD_POPUP_START_DELAY_S = 0.05
+SCROLL_CENTER_DELAYS_S = (0, 0.05, 0.2)
+
+OVERVIEW_SITE_SIZE = (200, 150)  # width, height
+FIGSIZE_STEP_FACTOR = 0.75
+
+DETAIL_BIN_SIZE_MS = 1
+OVERVIEW_BIN_SIZE_MS = 5
+DETAIL_BUBBLE_SIZE = 30
+OVERVIEW_BUBBLE_SIZE = 6
+PSTH_BIN_SIZE_OPTIONS = ("1 ms", "5 ms")
+PSTH_MIN_Y_OPTIONS = ("None", "10", "20", "30", "40")
+
+FLASH_INTERVAL_S = 0.08
+FLASH_COUNT = 8
+ZOOM_IN_FACTOR = 0.9
+ZOOM_OUT_FACTOR = 1.1
+
+MPL_PSTH_AX_RECT = [0.125, 0.495, 0.775, 0.385]
+MPL_TC_AX_RECT = [0.125, 0.11, 0.775, 0.385]
+
+DEFAULT_SITE_LINE_RGBA = [0.435, 0.51, 0.541, 1]
+DEFAULT_SITE_LINE_RGB = DEFAULT_SITE_LINE_RGBA[:3]
+DEFAULT_SITE_FILL_RGBA = [1, 1, 1, 1]
+DEFAULT_SITE_FILL_RGB = DEFAULT_SITE_FILL_RGBA[:3]
+
+UNSAVED_LINE_HEX = "#f7022a"   # xkcd:cherry red
+UNSAVED_MESH_HEX = "#cfff04"   # xkcd:neon yellow
+FLASH_ACTIVE_LINE_HEX = "#f7022a"
+FLASH_ACTIVE_FILL_HEX = "#070d0d"  # xkcd:almost black
+
+# kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
+install_distutils_version_shim()
+from kivy_garden.matplotlib.backend_kivyagg import (
+    FigureCanvasKivyAgg as FigureCanvas,
+)
 
 configure_file_logging("map_gui_log.log", level=logging.ERROR)
 install_excepthooks()
 logger = logging.getLogger(__name__)
 
-import datetime
-import itertools
-import numpy as np
-import matplotlib
-# Pin non-interactive backend prior to importing kivy
-matplotlib.use("Agg")
-# kivy_garden.matplotlib still imports distutils.version on Python 3.12+.
-install_distutils_version_shim()
 from kivy.app import App
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
-# Pip-installable replacement for the legacy `garden install matplotlib` flower.
-# Aliased so the rest of the module doesn't need to change.
-from kivy_garden.matplotlib.backend_kivyagg import FigureCanvasKivyAgg as FigureCanvas
 from kivy.uix.scrollview import ScrollView
 from kivy.core.window import Window
 from kivy.uix.button import Button
@@ -44,19 +101,9 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Mesh
-from matplotlib.path import Path as MplPath
-import pandas as pd
-import cmocean
 from kivy.utils import get_color_from_hex as hex2rgb
 from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.uix.slider import Slider
-import analysis_functions as afunc
-import blinker
-from collections import namedtuple
-from matplotlib.collections import LineCollection
-from matplotlib.figure import Figure
-from db_adapter import JSONStore
-from site_model import SiteModel, StimConfig
 
 logging.getLogger("kivy").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
@@ -64,6 +111,14 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 if Window is not None:
     Window.clearcolor = (1, 1, 1, 1)
+    Window.size = (max(Window.width, WINDOW_MIN_SIZE[0]),
+                   max(Window.height, WINDOW_MIN_SIZE[1]))
+
+
+LineTuple = namedtuple("LineTuple",
+                       ["line", "color", "x_norm", "y_norm", "site_number"])
+MeshTuple = namedtuple("MeshTuple",
+                       ["mesh", "color", "x_norm", "y_norm", "site_number"])
 
 
 class FieldSelectionApp(App):
@@ -98,9 +153,6 @@ class SiteScreen(Screen):
         self.unsaved_changes = False
         self.map_number = num
         self.gui_instance = gui_instance
-
-        # Flash site when returning to Map screen
-        self.flash_signal = blinker.signal("flash")
 
         # Arrange GUI
         self.layout = BoxLayout(orientation="vertical")
@@ -204,7 +256,8 @@ class SiteScreen(Screen):
                                     size_hint=(0.1, 1))
         self.bin_size_label = Label(text="Bin Size", color=[0, 0, 0, 1], 
                                     size_hint=(0.7, 1))
-        self.bin_size_spinner = Spinner(text="1 ms", values=("1 ms", "5 ms"), 
+        self.bin_size_spinner = Spinner(text="1 ms",
+                                        values=PSTH_BIN_SIZE_OPTIONS,
                                         size_hint=(0.3, 1))
         self.bin_size_spinner.bind(text=self.change_bin_size)
         bin_size_layout.add_widget(self.bin_size_label)
@@ -212,7 +265,7 @@ class SiteScreen(Screen):
 
         bubble_slider_layout = BoxLayout(orientation="horizontal")
         self.bubble_slider = Slider(size_hint=(0.975, 1), min=1, max=100, 
-                                    value=40, step=1)
+                                    value=DETAIL_BUBBLE_SIZE, step=1)
         self.bubble_slider.bind(value=self.change_bubble_size)
         self.bubble_slider_label = Label(text="Bubble Size", 
                                          color=[0, 0, 0, 1], 
@@ -233,7 +286,7 @@ class SiteScreen(Screen):
         self.tools_layout.add_widget(bubble_slider_layout)
         self.tools_layout.add_widget(options_layout)
 
-        densetc_plot.max_bubble_size = 30
+        densetc_plot.max_bubble_size = DETAIL_BUBBLE_SIZE
         self.densetc_plot = densetc_plot
         if self.densetc_plot.model.working.marked:
             self.mark_site_toggle.state = "down"
@@ -245,6 +298,7 @@ class SiteScreen(Screen):
         # Listen for user changes to analysis
         self.densetc_plot.on_changes_signal.connect(self.changes_made)
         self.densetc_plot.on_cf_pick_signal.connect(self.cf_picked)
+        self._syncing_plot_flag_checkbox = False
         
     def redraw(self):
         """Re-draw plots."""
@@ -256,17 +310,32 @@ class SiteScreen(Screen):
         Shared handler for the five TC-display checkboxes. Each flips
         one boolean on the detail SitePlot and redraws; which boolean
         is looked up from the checkbox instance.
-
-        TODO Fix mutually exclusive drawing flags
         """
+        if self._syncing_plot_flag_checkbox:
+            return
+
         attr = self._plot_flag_checkboxes[checkbox]
-        setattr(self.densetc_plot, attr, checked)
-        if attr in ("use_lineplot", "use_heatmap"):
-            self.bubble_slider.disabled = checked
+
+        if attr == "use_lineplot":
+            self.densetc_plot.use_lineplot = checked
             if checked:
-                other = ("use_heatmap" if attr == "use_lineplot"
-                         else "use_lineplot")
-                setattr(self.densetc_plot, other, False)
+                self.densetc_plot.use_heatmap = False
+                self._syncing_plot_flag_checkbox = True
+                self.heatmap_checkbox.active = False
+                self._syncing_plot_flag_checkbox = False
+        elif attr == "use_heatmap":
+            self.densetc_plot.use_heatmap = checked
+            if checked:
+                self.densetc_plot.use_lineplot = False
+                self._syncing_plot_flag_checkbox = True
+                self.lineplot_checkbox.active = False
+                self._syncing_plot_flag_checkbox = False
+        else:
+            setattr(self.densetc_plot, attr, checked)
+
+        self.bubble_slider.disabled = (
+            self.densetc_plot.use_lineplot or self.densetc_plot.use_heatmap
+        )
         self.redraw()
 
     def on_mark_toggle(self, _event):
@@ -294,7 +363,9 @@ class SiteScreen(Screen):
 
     def change_bin_size(self, _spinner, value):
         """Show PSTH with 1 or 5 ms bin size."""
-        self.densetc_plot.bin_size = 5 if value == "5 ms" else 1
+        self.densetc_plot.bin_size = (
+            OVERVIEW_BIN_SIZE_MS if value == "5 ms" else DETAIL_BIN_SIZE_MS
+        )
         self.redraw()
 
     def pick_cf(self, _event):
@@ -316,6 +387,8 @@ class SiteScreen(Screen):
         Persist working state to the DB and commit it as the new
         reset baseline.
         """
+        import datetime
+        import analysis_functions as afunc
         model = self.densetc_plot.model
         st = model.working
         cfg = model.config
@@ -373,10 +446,10 @@ class SiteScreen(Screen):
             update_doc[f"bw{lvl}_octave"] = bw_oct[lvl]
 
         self.gui_instance.densetc_analysis_collection.update_one(
-            {"analysis_id": self.gui_instance.analysis_id,
-             "number": self.map_number},
+            {"_id": self.gui_instance.densetc_analysis[self.map_number]["_id"]},
             {"$set": update_doc}
         )
+        self.gui_instance.densetc_analysis[self.map_number].update(update_doc)
 
         self.gui_instance.analysis_metadata_collection.update_one(
             {"_id": self.gui_instance.analysis_id},
@@ -384,6 +457,11 @@ class SiteScreen(Screen):
         )
 
         model.commit()
+        self.gui_instance._set_saved_site_map_state(
+            self.map_number,
+            self.gui_instance._saved_map_state.get(self.map_number, ("", False))[0],
+            st.marked,
+        )
         self.redraw()
 
     def auto_tc_analyze(self, *_args, **_kwargs):
@@ -391,6 +469,7 @@ class SiteScreen(Screen):
         Re-run the TC auto-analysis at the current latency window and
         load results into working state. Nothing persists until Save.
         """
+        import analysis_functions as afunc
         model = self.densetc_plot.model
         st = model.working
         cfg = model.config
@@ -429,7 +508,7 @@ class SiteScreen(Screen):
             # Non-responsive sites occasionally raise on draw; harmless.
             pass
 
-        self.flash_signal.send(
+        self.gui_instance.flash_signal.send(
             self.map_number,
             unsaved_changes=self.unsaved_changes,
             marked=self.densetc_plot.model.working.marked)
@@ -456,9 +535,8 @@ class FieldSelectionGUI(BoxLayout):
         window and picking again from the CLI.
         """
         super(FieldSelectionGUI, self).__init__(orientation="horizontal")
-        # Connect to signal for tracking transition from Site to Map Screens.
-        self.flash_signal = blinker.signal("flash")
-        self.flash_signal.connect(self.flash_cell)
+        # Lazily wired when the first detail screen is opened.
+        self.flash_signal = None
         self.flash_lw = 0
         self.flash_times = 0
         self.flash_line_color = None
@@ -480,11 +558,6 @@ class FieldSelectionGUI(BoxLayout):
         self.densetc_data_collection = None
         self.analysis_metadata_collection = None
         self.project_configuration = None
-        self.frequency = None
-        self.intensity = None
-        self.num_frequency = None
-        self.num_intensity = None
-        self.num_tones = None
         self.sites = None
         self.densetc_data = None
         self.densetc_analysis = None
@@ -493,15 +566,24 @@ class FieldSelectionGUI(BoxLayout):
         self.site_screens = {}
         self.site_models = {}
         self.stim_config = None
-
-        self.vor_df = None
-        self.dense_df = None
+        self._site_render_iter = None
+        self._render_batch_size = MAP_BATCH_SIZE
+        self._total_sites = 0
+        self._rendered_sites = 0
+        self.status_popup = None
+        self.status_popup_label = None
+        self._saved_map_state = {}
+        self._dirty_map_sites = set()
+        self._site_save_iter = None
+        self._save_batch_size = 1
+        self._save_total_sites = 0
+        self._saved_site_count = 0
+        self._syncing_plot_flag_toggles = False
 
         # Start with marks_active. Can be set to False before loading a map by
         # hitting the Show Fields button
         self.marks_active = True
 
-        self.map_num = None
         self.plot_dict = {}
         self.vor_lines = {}
         self.vor_meshes = {}
@@ -509,40 +591,18 @@ class FieldSelectionGUI(BoxLayout):
         # Used to control whether a cell is interactive or not.
         self.vor_active = {}
 
-        self.unsaved_line_color = "#f7022a"  # xkcd:cherry red
-        self.unsaved_mesh_color = "#cfff04"  # xkcd:neon yellow
+        self.unsaved_line_color = UNSAVED_LINE_HEX
+        self.unsaved_mesh_color = UNSAVED_MESH_HEX
 
-        self.fields = ("A1", "VAF", "PAF", "AAF", "SRAF", "NAR", "Other", 
-                       "Mark")
-        colors = [
-            "#3e82fc",  # A1 : xkcd:dodger blue
-            "#ffff81",  # VAF : xkcd:butter
-            "#90fda9",  # PAF : xkcd:foam green
-            "#fc86aa",  # AAF : xkcd:pinky
-            "#edc8ff",  # SRAF : xkcd:light lilac
-            "#5a7d9a",  # NAR : xkcd:steel blue
-            "#b04e0f",  # Other : xkcd:burnt sienna
-            "#c1fd95",  # Mark: xkcd:celery
-        ]
-        line_colors = [
-            "#0348c9",  # A1
-            "#ffff00",  # VAF
-            "#37fb65",  # PAF
-            "#fa3872",  # AAF
-            "#c44dff",  # SRAF
-            "#394e60",  # NAR
-            "#5e2908",  # Other
-            "#60dc04",  # Mark
-        ]
+        self.fields = GUI_FIELDS
         self.map_sets = {field: set() for field in self.fields}
-        self.field_colors = {field: color for field, color in 
-                             zip(self.fields, colors)}
-        self.field_line_colors = {field: color for field, color in 
-                                  zip(self.fields, line_colors)}
-        self.vor_file = ""
+        self.field_colors = FIELD_FILL_COLORS
+        self.field_line_colors = FIELD_LINE_COLORS
 
         # Arrange GUI
-        tools = StackLayout(orientation="lr-tb", size_hint=(0.075, 1))
+        tools = StackLayout(orientation="lr-tb",
+                            size_hint=(TOOLS_PANEL_WIDTH_HINT, 1))
+        self.tools_panel = tools
         self.cf_spinner_label = Label(text="CF\n Colormap", 
                                       color=[0, 0, 0, 1], 
                                       size_hint=(1, 0.06), 
@@ -598,7 +658,7 @@ class FieldSelectionGUI(BoxLayout):
                                          color=[0, 0, 0, 1], 
                                          size_hint=(1, 0.04),
                                          halign="center")
-        self.field_spinner = Spinner(text="Mark", values=self.fields, 
+        self.field_spinner = Spinner(text=MARK_FIELD, values=self.fields,
                                      size_hint=(1, 0.06))
         self.field_spinner.bind(text=self.check_mark_or_field)
 
@@ -618,8 +678,8 @@ class FieldSelectionGUI(BoxLayout):
         tools.add_widget(self.field_spinner_label)
         tools.add_widget(self.field_spinner)
 
-        self.plot_tools_layout = StackLayout(orientation="lr-tb", 
-                                             size_hint=(0.075, 1))
+        self.plot_tools_layout = StackLayout(orientation="lr-tb",
+                                             size_hint=(TOOLS_PANEL_WIDTH_HINT, 1))
 
         self.toggle_contour = ToggleButton(text="Contours", 
                                            size_hint=(1, 0.058))
@@ -667,17 +727,17 @@ class FieldSelectionGUI(BoxLayout):
         self.map_bubble_label = Label(text="Bubble Size", color=[0, 0, 0, 1], 
                                       size_hint=(1, 0.03))
         self.map_bubble_slider = Slider(size_hint=(1, 0.04), min=1, max=20, 
-                                        value=6, step=2, value_track=True, 
+                                        value=OVERVIEW_BUBBLE_SIZE, step=2,
+                                        value_track=True,
                                         value_track_color=[1, 0, 0, 1])
         self.map_bubble_slider.bind(value=self.change_bubble_size)
 
         self.psth_y_label = Label(text="PSTH Min.\nY-Lim", color=[0, 0, 0, 1], 
                                   size_hint=(1, 0.04), halign="center")
-        self.psth_y_spinner = Spinner(text="None", 
-                                      values={"None", "10", "20", "30", "40"}, 
+        self.psth_y_spinner = Spinner(text="None",
+                                      values=PSTH_MIN_Y_OPTIONS,
                                       size_hint=(1, 0.06))
         self.psth_y_spinner.bind(text=self.on_psth_ylim)
-
         self.plot_tools_layout.add_widget(self.toggle_contour)
         self.plot_tools_layout.add_widget(self.toggle_lineplot)
         self.plot_tools_layout.add_widget(self.toggle_bw)
@@ -702,6 +762,157 @@ class FieldSelectionGUI(BoxLayout):
         # builds hundreds of matplotlib figures and draws on the Kivy
         # canvas, which needs the event loop running.
         Clock.schedule_once(self._load)
+
+    def _ensure_flash_signal(self):
+        if self.flash_signal is None:
+            import blinker
+            self.flash_signal = blinker.signal("flash")
+            self.flash_signal.connect(self.flash_cell)
+
+    def _set_loading_state(self, active):
+        self.tools_panel.disabled = active
+        self.plot_tools_layout.disabled = active
+        self.scroll.disabled = active
+
+    def _show_status_popup(self):
+        if self.status_popup is not None:
+            return
+        layout = BoxLayout(orientation="vertical", padding=18)
+        self.status_popup_label = Label(
+            text="",
+            markup=True,
+            halign="center",
+            valign="middle",
+            color=[0.96, 0.96, 0.96, 1],
+            font_size=LOAD_POPUP_FONT_SIZE,
+        )
+        self.status_popup_label.bind(
+            size=self.status_popup_label.setter("text_size"))
+        layout.add_widget(self.status_popup_label)
+        self.status_popup = Popup(
+            title="",
+            content=layout,
+            size_hint=(None, None),
+            size=LOAD_POPUP_SIZE,
+            auto_dismiss=False,
+            separator_height=0,
+        )
+        self.status_popup.open()
+
+    def _hide_status_popup(self):
+        if self.status_popup is None:
+            return
+        self.status_popup.dismiss()
+        self.status_popup = None
+        self.status_popup_label = None
+
+    def _update_status_popup(self, title, current, total, noun):
+        if total and self.status_popup_label is not None:
+            self.status_popup_label.text = (
+                f"[b]{title}[/b]\n"
+                f"{current}/{total} {noun}"
+            )
+
+    def _current_site_map_state(self, site_number):
+        field_assignment = next(
+            (field for field in FIELD_NAMES if site_number in self.map_sets[field]),
+            "",
+        )
+        marked = site_number in self.map_sets[MARK_FIELD]
+        return field_assignment, marked
+
+    def _refresh_site_dirty_state(self, site_number):
+        if self._current_site_map_state(site_number) != \
+                self._saved_map_state.get(site_number, ("", False)):
+            self._dirty_map_sites.add(site_number)
+        else:
+            self._dirty_map_sites.discard(site_number)
+
+    def _set_saved_site_map_state(self, site_number, field_assignment, marked):
+        self._saved_map_state[site_number] = (field_assignment, marked)
+        self._refresh_site_dirty_state(site_number)
+
+    def _persist_site_map_state(self, site_number):
+        field_assignment, marked = self._current_site_map_state(site_number)
+        self.densetc_analysis_collection.update_one(
+            {"_id": self.densetc_analysis[site_number]["_id"]},
+            {"$set": {
+                "marked": marked,
+                "field_assignment": field_assignment,
+            }})
+        self.densetc_analysis[site_number]["marked"] = marked
+        self.densetc_analysis[site_number]["field_assignment"] = field_assignment
+        self._saved_map_state[site_number] = (field_assignment, marked)
+        self._dirty_map_sites.discard(site_number)
+
+    def _display_field_for_site(self, site_number):
+        if self.marks_active:
+            return MARK_FIELD if site_number in self.map_sets[MARK_FIELD] else None
+        for field in FIELD_NAMES:
+            if site_number in self.map_sets[field]:
+                return field
+        return None
+
+    def _cell_visual_state(self, site_number, alpha=None, unsaved_changes=False):
+        if alpha is None:
+            alpha = self.field_alpha_slider.value_normalized
+
+        if unsaved_changes:
+            line_rgb = hex2rgb(self.unsaved_line_color)[:3]
+            fill_rgba = hex2rgb(self.unsaved_mesh_color)
+            fill_rgba[3] = alpha
+            return {
+                "line_width": 5,
+                "line_rgb": line_rgb,
+                "fill_rgba": fill_rgba,
+            }
+
+        field = self._display_field_for_site(site_number)
+        if field is None:
+            return {
+                "line_width": 1.5,
+                "line_rgb": list(DEFAULT_SITE_LINE_RGB),
+                "fill_rgba": [*DEFAULT_SITE_FILL_RGB, alpha],
+            }
+
+        fill_rgba = hex2rgb(self.field_colors[field])
+        fill_rgba[3] = alpha
+        return {
+            "line_width": 3,
+            "line_rgb": hex2rgb(self.field_line_colors[field])[:3],
+            "fill_rgba": fill_rgba,
+        }
+
+    def _paint_cell(self, site_number, alpha=None):
+        state = self._cell_visual_state(site_number, alpha=alpha)
+        self.vor_lines[site_number].line.width = state["line_width"]
+        self.vor_lines[site_number].color.rgb = state["line_rgb"]
+        self.vor_meshes[site_number].color.rgba = state["fill_rgba"]
+
+    def _center_scroll_view(self, _dt=0):
+        if self.scroll.width <= 0 or self.scroll.height <= 0:
+            return
+        if self.map_canvas.width > self.scroll.width:
+            self.scroll.scroll_x = 0.5
+        else:
+            self.scroll.scroll_x = 0
+        if self.map_canvas.height > self.scroll.height:
+            self.scroll.scroll_y = 0.5
+        else:
+            self.scroll.scroll_y = 1
+
+    def _schedule_center_scroll_view(self):
+        for delay in SCROLL_CENTER_DELAYS_S:
+            Clock.schedule_once(self._center_scroll_view, delay)
+
+    def _start_display_map_batches(self, _dt):
+        self._show_status_popup()
+        self._update_status_popup("Loading overview", self._rendered_sites,
+                                  self._total_sites, "sites")
+        self._schedule_center_scroll_view()
+        # Give Kivy a beat to paint the popup before the first matplotlib
+        # batch starts chewing through the event loop.
+        Clock.schedule_once(self._display_map_batch, LOAD_POPUP_START_DELAY_S)
 
     def _load(self, _dt):
         """
@@ -730,8 +941,8 @@ class FieldSelectionGUI(BoxLayout):
                 # so we make them up. 3000x1000 is just "tall and
                 # narrow" to suit a depth column; doesn't persist back
                 # to the database.
-                self.map_metadata["map_height"] = 3000
-                self.map_metadata["map_width"] = 1000
+                self.map_metadata["map_height"] = IC_PSEUDO_MAP_SIZE[0]
+                self.map_metadata["map_width"] = IC_PSEUDO_MAP_SIZE[1]
                 self.densetc_data_collection = \
                     self.subject_database.densetc_IC_data
                 self.densetc_analysis_collection = \
@@ -749,14 +960,6 @@ class FieldSelectionGUI(BoxLayout):
             self.project_configuration = \
                 self.analysis_metadata_collection.find_one(
                     {"configuration": {"$exists": True}})["configuration"]
-            self.frequency = np.sort(
-                self.project_configuration["densetc_frequency_hz"])
-            self.intensity = np.sort(
-                self.project_configuration["densetc_intensity_db"])
-            self.num_frequency = len(self.frequency)
-            self.num_intensity = len(self.intensity)
-            self.num_tones = \
-                self.project_configuration["densetc_num_tones"]
 
             # --- Sites, data, analysis -------------------------------
             if is_ic:
@@ -773,6 +976,11 @@ class FieldSelectionGUI(BoxLayout):
                 a["number"]: a
                 for a in self.densetc_analysis_collection.find(
                     {"analysis_id": self.analysis_id})}
+            self._saved_map_state = {
+                num: (doc.get("field_assignment", ""), doc.get("marked", False))
+                for num, doc in self.densetc_analysis.items()
+            }
+            self._dirty_map_sites.clear()
             
             # One StimConfig shared by every SiteModel. Sweep length is
             # sniffed from a PSTH if the project config doesn't carry it.
@@ -782,7 +990,6 @@ class FieldSelectionGUI(BoxLayout):
                 fallback_sweep_ms=len(any_analysis["psth"]))
 
             self.display_map()
-            print("\n *** Ready! *** \n")
 
         except Exception as e:
             logger.exception("Failed to load map")
@@ -810,6 +1017,7 @@ class FieldSelectionGUI(BoxLayout):
         `self.parent` is the MapScreen that owns this layout.
         """
         if site_number not in self.site_screens:
+            self._ensure_flash_signal()
             detail_plot = SitePlot(
                 model=self.site_models[site_number],
                 detailed_plot=True,
@@ -846,7 +1054,7 @@ class FieldSelectionGUI(BoxLayout):
         Quick function to check what user intends and help them out instead of 
         requiring unnecessary mouse-clicks.
         """
-        if value == "Mark":
+        if value == MARK_FIELD:
             # User wants to mark sites instead of select fields. 
             # Make sure marks are visible
             self.toggle_show_marks.state = "down"
@@ -860,31 +1068,13 @@ class FieldSelectionGUI(BoxLayout):
         alpha_value = self.field_alpha_slider.value_normalized
         if state == "down":  # Show fields
             self.marks_active = False
-            if self.field_spinner.text == "Mark":
-                self.field_spinner.text = "A1"
+            if self.field_spinner.text == MARK_FIELD:
+                self.field_spinner.text = FIELD_NAMES[0]
             if self.sites is None:  # Map isn't loaded
                 return
 
             for site in self.sites:
-                site_number = site["number"]
-                field_assigned = False
-                for field in self.fields:
-                    if field == "Mark":
-                        continue
-                    if site_number in self.map_sets[field]:
-                        field_assigned = True
-                        self.vor_meshes[site_number].color.rgb = \
-                            hex2rgb(self.field_colors[field])
-                        self.vor_meshes[site_number].color.a = alpha_value
-                        self.vor_lines[site_number].line.width = 3
-                        self.vor_lines[site_number].color.rgb = \
-                            hex2rgb(self.field_line_colors[field])
-                if not field_assigned:
-                    # Leave site blank if no field has been assigned yet.
-                    self.vor_meshes[site_number].color.rgb = [1, 1, 1]
-                    self.vor_lines[site_number].line.width = 1.5
-                    self.vor_lines[site_number].color.rgb = \
-                        [0.435, 0.51, 0.541]  # xkcd:steel grey
+                self._paint_cell(site["number"], alpha=alpha_value)
 
         # Handle visibility of sites
         self.on_hide_field("field_selection")
@@ -894,25 +1084,13 @@ class FieldSelectionGUI(BoxLayout):
         alpha_value = self.field_alpha_slider.value_normalized
         if state == "down":  # Show marks
             self.marks_active = True
-            if self.field_spinner.text != "Mark":
-                self.field_spinner.text = "Mark"
+            if self.field_spinner.text != MARK_FIELD:
+                self.field_spinner.text = MARK_FIELD
             if self.sites is None:  # Map isn't loaded
                 return
 
             for site in self.sites:
-                site_number = site["number"]
-                if site_number in self.map_sets["Mark"]:
-                    self.vor_meshes[site_number].color.rgb = \
-                        hex2rgb(self.field_colors["Mark"])
-                    self.vor_meshes[site_number].color.a = alpha_value
-                    self.vor_lines[site_number].line.width = 3
-                    self.vor_lines[site_number].color.rgb = \
-                        hex2rgb(self.field_line_colors["Mark"])
-                else:
-                    self.vor_meshes[site_number].color.rgb = [1, 1, 1]
-                    self.vor_lines[site_number].line.width = 1.5
-                    self.vor_lines[site_number].color.rgb = \
-                        [0.435, 0.51, 0.541]  # xkcd:steel grey
+                self._paint_cell(site["number"], alpha=alpha_value)
 
         # Handle visibility of sites
         self.on_hide_field("field_selection")
@@ -931,9 +1109,9 @@ class FieldSelectionGUI(BoxLayout):
         if site_number is not None:
             for field in self.fields:
                 if self.marks_active:  # Ignore fields and only hide Marked's
-                    if field != "Mark":
+                    if field != MARK_FIELD:
                         continue
-                elif field == "Mark":  # Ignore Marked's and only hide fields
+                elif field == MARK_FIELD:  # Ignore Marked's and only hide fields
                     continue
 
                 if site_number in self.map_sets[field]:
@@ -961,9 +1139,9 @@ class FieldSelectionGUI(BoxLayout):
                     self.plot_dict[site_number].opacity = 1
                 for field in self.fields:
                     if site_number in self.map_sets[field]:
-                        if self.marks_active and field != "Mark":
+                        if self.marks_active and field != MARK_FIELD:
                             continue
-                        elif not self.marks_active and field == "Mark":
+                        elif not self.marks_active and field == MARK_FIELD:
                             continue
 
                         if self.toggle_hide_dict[field].state == "down":
@@ -981,10 +1159,37 @@ class FieldSelectionGUI(BoxLayout):
 
     def _on_plot_flag_toggle(self, toggle):
         """Shared handler for the map-wide TC display toggles."""
+        if self._syncing_plot_flag_toggles:
+            return
+
         attr = self._plot_flag_toggles[toggle]
         value = (toggle.state == "down")
+
+        if attr == "use_lineplot" and value:
+            self._syncing_plot_flag_toggles = True
+            self.toggle_heatmap.state = "normal"
+            self._syncing_plot_flag_toggles = False
+        elif attr == "use_heatmap" and value:
+            self._syncing_plot_flag_toggles = True
+            self.toggle_lineplot.state = "normal"
+            self._syncing_plot_flag_toggles = False
+
         for plot in self.plot_dict.values():
-            setattr(plot, attr, value)
+            if attr == "use_lineplot":
+                plot.use_lineplot = value
+                if value:
+                    plot.use_heatmap = False
+            elif attr == "use_heatmap":
+                plot.use_heatmap = value
+                if value:
+                    plot.use_lineplot = False
+            else:
+                setattr(plot, attr, value)
+
+        self.map_bubble_slider.disabled = (
+            self.toggle_lineplot.state == "down" or
+            self.toggle_heatmap.state == "down"
+        )
         self._redraw_all_plots()
 
     def on_psth_ylim(self, _spinner, text):
@@ -993,51 +1198,63 @@ class FieldSelectionGUI(BoxLayout):
 
     def export_map(self, _event):
         """Save Auditory Field selections and Marked sites to .json file."""
-        if self.map_loaded:
-            if self.marks_active:  # Save marks instead of fields
-                for site in self.sites:
-                    site_number = site["number"]
-                    if site_number in self.map_sets["Mark"]:
-                        marked = True
-                    else:
-                        marked = False
-                    self.densetc_analysis_collection.update_one(
-                        {"analysis_id": self.analysis_id, 
-                         "number": site_number},
-                        {"$set": {
-                            "marked": marked
-                        }})
+        if not self.map_loaded:
+            return
+        if not self._dirty_map_sites:
+            InfoPopup("No Changes", "No field / mark changes to save.").open()
+            return
 
-            for field, map_set in self.map_sets.items():
-                if field == "Mark":  # Don't save Marks as a field assignment!
-                    continue
-                for site_number in map_set:
-                    self.densetc_analysis_collection.update_one(
-                        {"analysis_id": self.analysis_id, 
-                         "number": site_number},
-                        {"$set": {
-                            "field_assignment": field
-                        }})
+        self._set_loading_state(True)
+        self._site_save_iter = iter(sorted(self._dirty_map_sites))
+        self._save_total_sites = len(self._dirty_map_sites)
+        self._saved_site_count = 0
+        self._show_status_popup()
+        self._update_status_popup("Saving fields / marks", 0,
+                                  self._save_total_sites, "sites")
+        Clock.schedule_once(self._save_map_batch, LOAD_POPUP_START_DELAY_S)
 
-            # Update last_modified field on analysis_metadata
-            today = str(datetime.datetime.now())
-            self.analysis_metadata_collection.update_one(
-                {"_id": self.analysis_id},
-                {"$set": {
-                    "last_modified": today
-                }})
+    def _save_map_batch(self, _dt):
+        saved_this_tick = 0
+        while saved_this_tick < self._save_batch_size:
+            try:
+                site_number = next(self._site_save_iter)
+            except StopIteration:
+                self._finish_export_map_save()
+                return False
+            self._persist_site_map_state(site_number)
+            self._saved_site_count += 1
+            saved_this_tick += 1
 
-            InfoPopup("Success", "Fields / Marks saved!").open()
+        self._update_status_popup("Saving fields / marks", self._saved_site_count,
+                                  self._save_total_sites, "sites")
+        Clock.schedule_once(self._save_map_batch, 0)
+        return False
+
+    def _finish_export_map_save(self):
+        import datetime
+
+        self.analysis_metadata_collection.update_one(
+            {"_id": self.analysis_id},
+            {"$set": {"last_modified": str(datetime.datetime.now())}})
+        self._site_save_iter = None
+        self._set_loading_state(False)
+        self._hide_status_popup()
+        InfoPopup(
+            "Success",
+            f"Fields / Marks saved for {self._saved_site_count} site(s)!",
+        ).open()
 
     def increase_figsize(self, _event):
         """Increase matplotlib figure size."""
         for fig in self.plot_dict.values():
-            fig.size = (fig.width / 0.75, fig.height / 0.75)
+            fig.size = (fig.width / FIGSIZE_STEP_FACTOR,
+                        fig.height / FIGSIZE_STEP_FACTOR)
 
     def decrease_figsize(self, _event):
         """Decrease matplotlib figure size."""
         for fig in self.plot_dict.values():
-            fig.size = (fig.width * 0.75, fig.height * 0.75)
+            fig.size = (fig.width * FIGSIZE_STEP_FACTOR,
+                        fig.height * FIGSIZE_STEP_FACTOR)
 
     def _build_ic_pseudo_sites(self):
         """
@@ -1051,6 +1268,7 @@ class FieldSelectionGUI(BoxLayout):
         per-depth max to skip the zeros, then backfill the topmost site(s)
         which have nothing before them to diff against.
         """
+        import pandas as pd
         ic_sites = [
             {"number": int(s["number"]), "depth": int(s["depth"])}
             for s in self.densetc_data_collection.find({})
@@ -1095,125 +1313,118 @@ class FieldSelectionGUI(BoxLayout):
         return sites
 
     def display_map(self):
-        """Generate map visuals."""
-        LineTuple = namedtuple("LineTuple", 
-                               ["line", "color", "x_norm", "y_norm", 
-                                "site_number"])
-        MeshTuple = namedtuple("MeshTuple", 
-                               ["mesh", "color", "x_norm", "y_norm", 
-                                "site_number"])
-        for site in self.sites:
-            # xy coords are already normalized, but here we reduce them to 90%
-            # to provide some padding at the border of MapLayout -> allows 
-            # the user to move edge sites a little closer to the center for 
-            # easier viewing. Purely aesthetic.
-            reduced_scale = [0.1, 0.9]
-            site_number = site["number"]
-            site_analysis = self.densetc_analysis[site_number]
-            # If 'marked' is not a current document property from database 
-            # (analysis from older versions), add it.
-            if "marked" not in site_analysis:
-                site_analysis["marked"] = False
-
-            # Recreate set of field and marked assignments saved in analysis 
-            # for proper painting of sites
-            if site_analysis["field_assignment"]:
-                self.map_sets[
-                    site_analysis["field_assignment"]].add(site_number)
-            if site_analysis["marked"]:
-                self.map_sets["Mark"].add(site_number)
-
-            x = (site["voronoi_centroid"][0] * 
-                 (reduced_scale[1] - reduced_scale[0]) / 
-                 (1 - 0) + reduced_scale[0])
-            y = (site["voronoi_centroid"][1] * 
-                 (reduced_scale[1] - reduced_scale[0]) / 
-                 (1 - 0) + reduced_scale[0])
-            
-            model = SiteModel(site_number,
-                              self.densetc_data[site_number],
-                              site_analysis,
-                              self.stim_config)
-            self.site_models[site_number] = model
-            site_plot = SitePlot(
-                model=model,
-                detailed_plot=False,
-                is_ic=self.ic_bool,
-                cf_cmap=self.cf_colormap_dropdown.text,
-                heatmap_cmap=self.heatmap_colormap_dropdown.text,
-                size_hint=(None, None), 
-                pos_hint={"center_x": x, "center_y": y},
-                height=150, 
-                width=200)
-
-            self.plot_dict[site_number] = site_plot
-            self.map_canvas.add_widget(site_plot)
-            with self.map_canvas.canvas.before:
-                # Check if site should start painted some color
-                if site_analysis["field_assignment"] and not self.marks_active:
-                    line_color = Color(*hex2rgb(
-                        self.field_line_colors[
-                            site_analysis["field_assignment"]]))
-                    lw = 3
-                elif site_analysis["marked"] and self.marks_active:
-                    line_color = Color(*hex2rgb(
-                        self.field_line_colors["Mark"]))
-                    lw = 3
-                else:
-                    # Paint default color
-                    line_color = Color(0.435, 0.51, 0.541, 1)  #xkcd:steel grey
-                    lw = 1.5
-
-                poly_norm_points = site["voronoi_vertices"]
-                poly_x = [pnt[0] * (reduced_scale[1] - reduced_scale[0]) / 
-                          (1 - 0) + reduced_scale[0] for pnt in 
-                          poly_norm_points]
-                poly_y = [pnt[1] * (reduced_scale[1] - reduced_scale[0]) / 
-                          (1 - 0) + reduced_scale[0] for pnt in 
-                          poly_norm_points]
-                height = self.map_canvas.height
-                width = self.map_canvas.width
-                poly_x_adjusted = list(np.array(poly_x) * width)
-                poly_y_adjusted = list(np.array(poly_y) * height)
-                adjusted_points = list(itertools.chain(*zip(poly_x_adjusted, 
-                                                            poly_y_adjusted)))
-                line_ = Line(points=adjusted_points, width=lw, close=True)
-                self.vor_lines[site_number] = LineTuple(
-                    line=line_, color=line_color, x_norm=poly_x, y_norm=poly_y,
-                    site_number=site_number)
-                mesh_adjusted_points = list(itertools.chain(*[
-                    (x, y, 0, 0) for x, y in 
-                    zip(poly_x_adjusted, poly_y_adjusted)]))
-                indices = list(range(len(poly_x_adjusted)))
-
-                # Check if site should start painted some color
-                # mesh_color must be declared AFTER line color is done being 
-                # used, as Kivy uses a universal Color() rather than a keyword 
-                # argument. Assigning line_color and mesh_color in the same 
-                # if/else block would result in Lines and Meshes with 
-                # identical colors.
-                if site_analysis["field_assignment"] and not self.marks_active:
-                    mesh_color = Color(*hex2rgb(
-                        self.field_colors[site_analysis["field_assignment"]]))
-                elif site_analysis["marked"] and self.marks_active:
-                    mesh_color = Color(*hex2rgb(self.field_colors["Mark"]))
-                else:
-                    mesh_color = Color(1, 1, 1, 1)
-
-                mesh_ = Mesh(vertices=mesh_adjusted_points, indices=indices, 
-                             mode="triangle_fan")
-                self.vor_meshes[site_number] = MeshTuple(
-                    mesh=mesh_, color=mesh_color, x_norm=poly_x, y_norm=poly_y,
-                    site_number=site_number)
-                self.vor_active[site_number] = True
-
+        """Generate map visuals progressively so the window shows progress."""
         self.map_canvas.bind(size=self.update_line)
         self.map_canvas.bind(size=self.update_mesh)
-
         self.map_canvas.height = int(self.map_metadata["map_height"])
         self.map_canvas.width = int(self.map_metadata["map_width"])
+        self.map_loaded = False
+        self._set_loading_state(True)
+        self._site_render_iter = iter(self.sites)
+        self._total_sites = len(self.sites)
+        self._rendered_sites = 0
+        Clock.schedule_once(self._start_display_map_batches, 0)
 
+    def _display_map_batch(self, _dt):
+        rendered_this_tick = 0
+        while rendered_this_tick < self._render_batch_size:
+            try:
+                site = next(self._site_render_iter)
+            except StopIteration:
+                self._finish_display_map()
+                return False
+            self._display_site(site)
+            rendered_this_tick += 1
+
+        self._update_status_popup("Loading overview", self._rendered_sites,
+                                  self._total_sites, "sites")
+        Clock.schedule_once(self._display_map_batch, MAP_BATCH_DELAY_S)
+        return False
+
+    def _finish_display_map(self):
+        self._site_render_iter = None
         self.map_loaded = True
+        self._set_loading_state(False)
+        self._hide_status_popup()
+        self._schedule_center_scroll_view()
+        print("\n *** Ready! *** \n")
+
+    def _display_site(self, site):
+        # xy coords are already normalized, but here we reduce them to 90%
+        # to provide some padding at the border of MapLayout -> allows
+        # the user to move edge sites a little closer to the center for
+        # easier viewing. Purely aesthetic.
+        reduced_scale = MAP_REDUCED_SCALE
+        site_number = site["number"]
+        site_analysis = self.densetc_analysis[site_number]
+        if "marked" not in site_analysis:
+            site_analysis["marked"] = False
+
+        if site_analysis["field_assignment"]:
+            self.map_sets[site_analysis["field_assignment"]].add(site_number)
+        if site_analysis["marked"]:
+            self.map_sets[MARK_FIELD].add(site_number)
+
+        x = (site["voronoi_centroid"][0] *
+             (reduced_scale[1] - reduced_scale[0]) /
+             (1 - 0) + reduced_scale[0])
+        y = (site["voronoi_centroid"][1] *
+             (reduced_scale[1] - reduced_scale[0]) /
+             (1 - 0) + reduced_scale[0])
+
+        model = SiteModel(site_number,
+                          self.densetc_data[site_number],
+                          site_analysis,
+                          self.stim_config)
+        self.site_models[site_number] = model
+        site_plot = SitePlot(
+            model=model,
+            detailed_plot=False,
+            is_ic=self.ic_bool,
+            cf_cmap=self.cf_colormap_dropdown.text,
+            heatmap_cmap=self.heatmap_colormap_dropdown.text,
+            size_hint=(None, None),
+            pos_hint={"center_x": x, "center_y": y},
+            height=OVERVIEW_SITE_SIZE[1],
+            width=OVERVIEW_SITE_SIZE[0])
+
+        self.plot_dict[site_number] = site_plot
+        self.map_canvas.add_widget(site_plot)
+        with self.map_canvas.canvas.before:
+            visual_state = self._cell_visual_state(site_number)
+            line_color = Color(*visual_state["line_rgb"], 1)
+            lw = visual_state["line_width"]
+
+            poly_norm_points = site["voronoi_vertices"]
+            poly_x = [pnt[0] * (reduced_scale[1] - reduced_scale[0]) /
+                      (1 - 0) + reduced_scale[0] for pnt in poly_norm_points]
+            poly_y = [pnt[1] * (reduced_scale[1] - reduced_scale[0]) /
+                      (1 - 0) + reduced_scale[0] for pnt in poly_norm_points]
+            height = self.map_canvas.height
+            width = self.map_canvas.width
+            poly_x_adjusted = list(np.array(poly_x) * width)
+            poly_y_adjusted = list(np.array(poly_y) * height)
+            adjusted_points = list(itertools.chain(*zip(poly_x_adjusted,
+                                                        poly_y_adjusted)))
+            line_ = Line(points=adjusted_points, width=lw, close=True)
+            self.vor_lines[site_number] = LineTuple(
+                line=line_, color=line_color, x_norm=poly_x, y_norm=poly_y,
+                site_number=site_number)
+            mesh_adjusted_points = list(itertools.chain(*[
+                (x, y, 0, 0) for x, y in zip(poly_x_adjusted, poly_y_adjusted)
+            ]))
+            indices = list(range(len(poly_x_adjusted)))
+
+            mesh_color = Color(*visual_state["fill_rgba"])
+
+            mesh_ = Mesh(vertices=mesh_adjusted_points, indices=indices,
+                         mode="triangle_fan")
+            self.vor_meshes[site_number] = MeshTuple(
+                mesh=mesh_, color=mesh_color, x_norm=poly_x, y_norm=poly_y,
+                site_number=site_number)
+            self.vor_active[site_number] = True
+
+        self._rendered_sites += 1
 
     def change_bubble_size(self, _slider, value):
         """Event signaling update to max bubble size for TC plot."""
@@ -1234,57 +1445,39 @@ class FieldSelectionGUI(BoxLayout):
         """Flash voronoi cell of Site-screen user nagivated away from."""
         # First add/remove site from Mark map_set
         if marked:
-            self.map_sets["Mark"].add(map_number)
+            self.map_sets[MARK_FIELD].add(map_number)
         else:
             try:
-                self.map_sets["Mark"].remove(map_number)
+                self.map_sets[MARK_FIELD].remove(map_number)
             except KeyError:  # If site is not in set, skip
                 pass
+        self._refresh_site_dirty_state(map_number)
 
         self.flash_times = 0
         self.flash_line = self.vor_lines[map_number]
         self.flash_mesh = self.vor_meshes[map_number]
         alpha_value = self.field_alpha_slider.value_normalized
         if unsaved_changes:
-            self.flash_lw = 5
-            self.flash_line_color = hex2rgb(self.unsaved_line_color)
-            self.flash_mesh_color = hex2rgb(self.unsaved_mesh_color)
-            self.flash_mesh_color[3] = alpha_value
+            visual_state = self._cell_visual_state(
+                map_number, alpha=alpha_value, unsaved_changes=True)
         else:
-            field_assigned = False
-            for field in self.fields:
-                if self.marks_active:  # Ignore auditory fields
-                    if field != "Mark":
-                        continue
-                elif field == "Mark":  # Ignore if marks marks_active is False
-                    continue
+            visual_state = self._cell_visual_state(map_number, alpha=alpha_value)
 
-                if map_number in self.map_sets[field]:
-                    field_assigned = True
-                    self.flash_lw = 3
-                    self.flash_line_color = hex2rgb(
-                        self.field_line_colors[field])
-                    self.flash_mesh_color = hex2rgb(self.field_colors[field])
-                    self.flash_mesh_color[3] = alpha_value
-
-            if not field_assigned:
-                self.flash_lw = 1.5
-                self.flash_line_color = [0.435, 0.51, 0.541]  # xkcd:steel grey
-                self.flash_mesh_color = [1, 1, 1, alpha_value]
+        self.flash_lw = visual_state["line_width"]
+        self.flash_line_color = visual_state["line_rgb"]
+        self.flash_mesh_color = visual_state["fill_rgba"]
 
         self.flash_clock_event = Clock.schedule_interval(self.flash_callback, 
-                                                         0.08)
+                                                         FLASH_INTERVAL_S)
 
     def flash_callback(self, _dt):
         """Simple callback to flash voronoi cell 8x, then canceling clock."""
         self.flash_times = self.flash_times + 1
-        if self.flash_times <= 8:
+        if self.flash_times <= FLASH_COUNT:
             if (self.flash_times % 2) == 1:
                 self.flash_line.line.width = 5
-                # xkcd:cherry red
-                self.flash_line.color.rgb = hex2rgb("#f7022a")
-                # xkcd:almost black
-                self.flash_mesh.color.rgb = hex2rgb("#070d0d")
+                self.flash_line.color.rgb = hex2rgb(FLASH_ACTIVE_LINE_HEX)
+                self.flash_mesh.color.rgb = hex2rgb(FLASH_ACTIVE_FILL_HEX)
             else:
                 self.flash_line.line.width = self.flash_lw
                 self.flash_line.color.rgb = self.flash_line_color
@@ -1354,11 +1547,12 @@ class MapLayout(FloatLayout):
         """
         Extend the paint stroke.
         """
-        # TODO tighten to `except KeyError` if verified same as `on_touch_up`
         try:
             if self.gui.paint_mode_active:
                 touch.ud["line"].points += [touch.x, touch.y]
-        except:
+        except KeyError:
+            # Thrown if program tries to interpret line drawn over GUI elements
+            super().on_touch_move(touch)
             pass
 
     def on_touch_up(self, touch):
@@ -1375,9 +1569,9 @@ class MapLayout(FloatLayout):
         if touch.is_mouse_scrolling:
             w, h = self.width, self.height
             if touch.button == "scrollup":
-                self.size = (w * 0.9, h * 0.9)
+                self.size = (w * ZOOM_IN_FACTOR, h * ZOOM_IN_FACTOR)
             elif touch.button == "scrolldown":
-                self.size = (w * 1.1, h * 1.1)
+                self.size = (w * ZOOM_OUT_FACTOR, h * ZOOM_OUT_FACTOR)
             return True
 
         gui = self.gui
@@ -1390,8 +1584,7 @@ class MapLayout(FloatLayout):
             stroke = touch.ud["line"].points
             selection_points = list(zip(stroke[0::2], stroke[1::2]))
         except KeyError:
-            # Error sometimes thrown when program tries to interpret a line
-            # drawn over other GUI elements
+            # Thrown if program tries to interpret line drawn over GUI elements
             super().on_touch_up(touch)
             return
 
@@ -1410,16 +1603,10 @@ class MapLayout(FloatLayout):
 
             if gui.toggle.state == "down":
                 # --- Select: assign the active field/Mark to this site ---
-                line_.line.width = 3
                 chosen = gui.field_spinner.text
                 for field in gui.fields:
                     if field == chosen:
                         gui.map_sets[field].add(site_num)
-                        gui.vor_meshes[site_num].color.rgb = \
-                            hex2rgb(gui.field_colors[field])
-                        gui.vor_meshes[site_num].color.a = alpha
-                        line_.color.rgb = \
-                            hex2rgb(gui.field_line_colors[field])
                         # If Hide-<field> is toggled, re-evaluate visibility
                         # now that this site belongs to it — lets the user
                         # progressively select-then-hide. The string arg is
@@ -1429,23 +1616,23 @@ class MapLayout(FloatLayout):
                     else:
                         # Sites belong to exactly one auditory field, but
                         # skip if user is marking them instead
-                        if gui.marks_active or field == "Mark":
+                        if gui.marks_active or field == MARK_FIELD:
                             continue
                         gui.map_sets[field].discard(site_num)
+                gui._paint_cell(site_num, alpha=alpha)
+                gui._refresh_site_dirty_state(site_num)
 
             elif gui.deselect_toggle.state == "down":
                 # --- Deselect: strip assignment, repaint as blank ---
-                line_.color.rgb = [0.435, 0.51, 0.541]  # xkcd:steel grey
-                line_.line.width = 1.5
-                gui.vor_meshes[site_num].color.rgb = [1, 1, 1]
-                gui.vor_meshes[site_num].color.a = alpha
                 for field in gui.fields:
                     # Same as selection rule above
-                    if field == "Mark" and not gui.marks_active:
+                    if field == MARK_FIELD and not gui.marks_active:
                         continue
-                    if field != "Mark" and gui.marks_active:
+                    if field != MARK_FIELD and gui.marks_active:
                         continue
                     gui.map_sets[field].discard(site_num)
+                gui._paint_cell(site_num, alpha=alpha)
+                gui._refresh_site_dirty_state(site_num)
 
             elif gui.show_figure_toggle.state == "down":
                 plot = gui.plot_dict[site_num]
@@ -1494,21 +1681,21 @@ class SitePlot(RelativeLayout):
     def __init__(self, model, detailed_plot, is_ic,
                  cf_cmap, heatmap_cmap, **layout_kwargs):
         super().__init__(**layout_kwargs)
-
         self.model = model
         self.detailed_plot = detailed_plot
         cfg = model.config
 
         if detailed_plot:
             # Listen for signals
+            import blinker
             self.on_changes_signal = blinker.Signal()
             self.on_cf_pick_signal = blinker.Signal()
 
         # Allow user to change cmaps used for plots
-        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        self.cf_cmap = mpl_colormaps[cf_cmap]
         self.heatmap_cmap = heatmap_cmap
         # TODO test 48khz
-        self.norm = matplotlib.colors.Normalize(
+        self.norm = mpl_colors.Normalize(
             vmin=0, vmax=cfg.num_frequency - 1)
 
         # IC responses are faster than cortical, so the latency colour
@@ -1516,7 +1703,8 @@ class SitePlot(RelativeLayout):
         # end where most onsets sit.
         lo, hi = (1, 16) if is_ic else (5, 20)
         self.speed_cmap = cmocean.cm.speed
-        self.speed_norm = matplotlib.colors.PowerNorm(0.65, vmin=lo, vmax=hi)
+        self.speed_norm = mpl_colors.PowerNorm(
+            0.65, vmin=lo, vmax=hi)
 
         # Display toggles
         self.use_smooth_tc = False
@@ -1527,12 +1715,12 @@ class SitePlot(RelativeLayout):
         self.manually_hidden = False
         if detailed_plot:
             self.active = False
-            self.bin_size = 1
-            self.max_bubble_size = 30
+            self.bin_size = DETAIL_BIN_SIZE_MS
+            self.max_bubble_size = DETAIL_BUBBLE_SIZE
         else:
             self.active = True
-            self.bin_size = 5
-            self.max_bubble_size = 6
+            self.bin_size = OVERVIEW_BIN_SIZE_MS
+            self.max_bubble_size = OVERVIEW_BUBBLE_SIZE
 
         # Artist handles, populated on render
         self.bubble = None
@@ -1562,13 +1750,12 @@ class SitePlot(RelativeLayout):
 
         self.fig = Figure()
         self.ax = [
-            self.fig.add_axes([0.125, 0.495, 0.775, 0.385]),
-            self.fig.add_axes([0.125, 0.11, 0.775, 0.385]),
+            self.fig.add_axes(MPL_PSTH_AX_RECT),
+            self.fig.add_axes(MPL_TC_AX_RECT),
         ]
 
         # Aesthetics
         self.fig.patch.set_alpha(0)
-        self.fig.subplots_adjust(wspace=0, hspace=0)
         self._has_render = False
         self._needs_redraw = detailed_plot
         
@@ -1665,7 +1852,7 @@ class SitePlot(RelativeLayout):
     def re_color(self, cf_cmap="viridis", heatmap_cmap="inferno"):
         """Update bubble plot or heatmap colors."""
         self.heatmap_cmap = heatmap_cmap
-        self.cf_cmap = matplotlib.colormaps[cf_cmap]
+        self.cf_cmap = mpl_colormaps[cf_cmap]
         # TODO allow user to change No CF color (default is red)
         if self.use_heatmap and self.heatmap is not None:
             self.heatmap.set_cmap(self.heatmap_cmap)
@@ -1919,6 +2106,7 @@ class SitePlot(RelativeLayout):
             event.canvas.draw()
 
     def move_line(self, x, y):
+        import analysis_functions as afunc
         xdata, _ = self.ax[0].transData.inverted().transform((x, y))
         if xdata is None:
             return
