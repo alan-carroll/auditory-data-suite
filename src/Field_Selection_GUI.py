@@ -446,10 +446,10 @@ class SiteScreen(Screen):
             update_doc[f"bw{lvl}_octave"] = bw_oct[lvl]
 
         self.gui_instance.densetc_analysis_collection.update_one(
-            {"analysis_id": self.gui_instance.analysis_id,
-             "number": self.map_number},
+            {"_id": self.gui_instance.densetc_analysis[self.map_number]["_id"]},
             {"$set": update_doc}
         )
+        self.gui_instance.densetc_analysis[self.map_number].update(update_doc)
 
         self.gui_instance.analysis_metadata_collection.update_one(
             {"_id": self.gui_instance.analysis_id},
@@ -457,6 +457,11 @@ class SiteScreen(Screen):
         )
 
         model.commit()
+        self.gui_instance._set_saved_site_map_state(
+            self.map_number,
+            self.gui_instance._saved_map_state.get(self.map_number, ("", False))[0],
+            st.marked,
+        )
         self.redraw()
 
     def auto_tc_analyze(self, *_args, **_kwargs):
@@ -565,8 +570,14 @@ class FieldSelectionGUI(BoxLayout):
         self._render_batch_size = MAP_BATCH_SIZE
         self._total_sites = 0
         self._rendered_sites = 0
-        self.load_popup = None
-        self.load_popup_label = None
+        self.status_popup = None
+        self.status_popup_label = None
+        self._saved_map_state = {}
+        self._dirty_map_sites = set()
+        self._site_save_iter = None
+        self._save_batch_size = 1
+        self._save_total_sites = 0
+        self._saved_site_count = 0
         self._syncing_plot_flag_toggles = False
 
         # Start with marks_active. Can be set to False before loading a map by
@@ -763,11 +774,11 @@ class FieldSelectionGUI(BoxLayout):
         self.plot_tools_layout.disabled = active
         self.scroll.disabled = active
 
-    def _show_load_popup(self):
-        if self.load_popup is not None:
+    def _show_status_popup(self):
+        if self.status_popup is not None:
             return
         layout = BoxLayout(orientation="vertical", padding=18)
-        self.load_popup_label = Label(
+        self.status_popup_label = Label(
             text="",
             markup=True,
             halign="center",
@@ -775,10 +786,10 @@ class FieldSelectionGUI(BoxLayout):
             color=[0.96, 0.96, 0.96, 1],
             font_size=LOAD_POPUP_FONT_SIZE,
         )
-        self.load_popup_label.bind(
-            size=self.load_popup_label.setter("text_size"))
-        layout.add_widget(self.load_popup_label)
-        self.load_popup = Popup(
+        self.status_popup_label.bind(
+            size=self.status_popup_label.setter("text_size"))
+        layout.add_widget(self.status_popup_label)
+        self.status_popup = Popup(
             title="",
             content=layout,
             size_hint=(None, None),
@@ -786,14 +797,53 @@ class FieldSelectionGUI(BoxLayout):
             auto_dismiss=False,
             separator_height=0,
         )
-        self.load_popup.open()
+        self.status_popup.open()
 
-    def _hide_load_popup(self):
-        if self.load_popup is None:
+    def _hide_status_popup(self):
+        if self.status_popup is None:
             return
-        self.load_popup.dismiss()
-        self.load_popup = None
-        self.load_popup_label = None
+        self.status_popup.dismiss()
+        self.status_popup = None
+        self.status_popup_label = None
+
+    def _update_status_popup(self, title, current, total, noun):
+        if total and self.status_popup_label is not None:
+            self.status_popup_label.text = (
+                f"[b]{title}[/b]\n"
+                f"{current}/{total} {noun}"
+            )
+
+    def _current_site_map_state(self, site_number):
+        field_assignment = next(
+            (field for field in FIELD_NAMES if site_number in self.map_sets[field]),
+            "",
+        )
+        marked = site_number in self.map_sets[MARK_FIELD]
+        return field_assignment, marked
+
+    def _refresh_site_dirty_state(self, site_number):
+        if self._current_site_map_state(site_number) != \
+                self._saved_map_state.get(site_number, ("", False)):
+            self._dirty_map_sites.add(site_number)
+        else:
+            self._dirty_map_sites.discard(site_number)
+
+    def _set_saved_site_map_state(self, site_number, field_assignment, marked):
+        self._saved_map_state[site_number] = (field_assignment, marked)
+        self._refresh_site_dirty_state(site_number)
+
+    def _persist_site_map_state(self, site_number):
+        field_assignment, marked = self._current_site_map_state(site_number)
+        self.densetc_analysis_collection.update_one(
+            {"_id": self.densetc_analysis[site_number]["_id"]},
+            {"$set": {
+                "marked": marked,
+                "field_assignment": field_assignment,
+            }})
+        self.densetc_analysis[site_number]["marked"] = marked
+        self.densetc_analysis[site_number]["field_assignment"] = field_assignment
+        self._saved_map_state[site_number] = (field_assignment, marked)
+        self._dirty_map_sites.discard(site_number)
 
     def _display_field_for_site(self, site_number):
         if self.marks_active:
@@ -856,8 +906,9 @@ class FieldSelectionGUI(BoxLayout):
             Clock.schedule_once(self._center_scroll_view, delay)
 
     def _start_display_map_batches(self, _dt):
-        self._show_load_popup()
-        self._update_load_status()
+        self._show_status_popup()
+        self._update_status_popup("Loading overview", self._rendered_sites,
+                                  self._total_sites, "sites")
         self._schedule_center_scroll_view()
         # Give Kivy a beat to paint the popup before the first matplotlib
         # batch starts chewing through the event loop.
@@ -925,6 +976,11 @@ class FieldSelectionGUI(BoxLayout):
                 a["number"]: a
                 for a in self.densetc_analysis_collection.find(
                     {"analysis_id": self.analysis_id})}
+            self._saved_map_state = {
+                num: (doc.get("field_assignment", ""), doc.get("marked", False))
+                for num, doc in self.densetc_analysis.items()
+            }
+            self._dirty_map_sites.clear()
             
             # One StimConfig shared by every SiteModel. Sweep length is
             # sniffed from a PSTH if the project config doesn't carry it.
@@ -1142,34 +1198,51 @@ class FieldSelectionGUI(BoxLayout):
 
     def export_map(self, _event):
         """Save Auditory Field selections and Marked sites to .json file."""
-        if self.map_loaded:
-            import datetime
+        if not self.map_loaded:
+            return
+        if not self._dirty_map_sites:
+            InfoPopup("No Changes", "No field / mark changes to save.").open()
+            return
 
-            for site in self.sites:
-                site_number = site["number"]
-                marked = site_number in self.map_sets[MARK_FIELD]
-                field_assignment = next(
-                    (field for field in FIELD_NAMES
-                     if site_number in self.map_sets[field]),
-                    "",
-                )
-                self.densetc_analysis_collection.update_one(
-                    {"analysis_id": self.analysis_id,
-                     "number": site_number},
-                    {"$set": {
-                        "marked": marked,
-                        "field_assignment": field_assignment,
-                    }})
+        self._set_loading_state(True)
+        self._site_save_iter = iter(sorted(self._dirty_map_sites))
+        self._save_total_sites = len(self._dirty_map_sites)
+        self._saved_site_count = 0
+        self._show_status_popup()
+        self._update_status_popup("Saving fields / marks", 0,
+                                  self._save_total_sites, "sites")
+        Clock.schedule_once(self._save_map_batch, LOAD_POPUP_START_DELAY_S)
 
-            # Update last_modified field on analysis_metadata
-            today = str(datetime.datetime.now())
-            self.analysis_metadata_collection.update_one(
-                {"_id": self.analysis_id},
-                {"$set": {
-                    "last_modified": today
-                }})
+    def _save_map_batch(self, _dt):
+        saved_this_tick = 0
+        while saved_this_tick < self._save_batch_size:
+            try:
+                site_number = next(self._site_save_iter)
+            except StopIteration:
+                self._finish_export_map_save()
+                return False
+            self._persist_site_map_state(site_number)
+            self._saved_site_count += 1
+            saved_this_tick += 1
 
-            InfoPopup("Success", "Fields / Marks saved!").open()
+        self._update_status_popup("Saving fields / marks", self._saved_site_count,
+                                  self._save_total_sites, "sites")
+        Clock.schedule_once(self._save_map_batch, 0)
+        return False
+
+    def _finish_export_map_save(self):
+        import datetime
+
+        self.analysis_metadata_collection.update_one(
+            {"_id": self.analysis_id},
+            {"$set": {"last_modified": str(datetime.datetime.now())}})
+        self._site_save_iter = None
+        self._set_loading_state(False)
+        self._hide_status_popup()
+        InfoPopup(
+            "Success",
+            f"Fields / Marks saved for {self._saved_site_count} site(s)!",
+        ).open()
 
     def increase_figsize(self, _event):
         """Increase matplotlib figure size."""
@@ -1263,7 +1336,8 @@ class FieldSelectionGUI(BoxLayout):
             self._display_site(site)
             rendered_this_tick += 1
 
-        self._update_load_status()
+        self._update_status_popup("Loading overview", self._rendered_sites,
+                                  self._total_sites, "sites")
         Clock.schedule_once(self._display_map_batch, MAP_BATCH_DELAY_S)
         return False
 
@@ -1271,7 +1345,7 @@ class FieldSelectionGUI(BoxLayout):
         self._site_render_iter = None
         self.map_loaded = True
         self._set_loading_state(False)
-        self._hide_load_popup()
+        self._hide_status_popup()
         self._schedule_center_scroll_view()
         print("\n *** Ready! *** \n")
 
@@ -1377,6 +1451,7 @@ class FieldSelectionGUI(BoxLayout):
                 self.map_sets[MARK_FIELD].remove(map_number)
             except KeyError:  # If site is not in set, skip
                 pass
+        self._refresh_site_dirty_state(map_number)
 
         self.flash_times = 0
         self.flash_line = self.vor_lines[map_number]
