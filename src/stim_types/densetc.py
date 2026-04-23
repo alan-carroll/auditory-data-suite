@@ -225,9 +225,49 @@ def _densetc_signal_bounds(spont):
     return 0.100, 0.150
 
 
+def _densetc_offset_from_sdf(sdf, onset, *, default_offset=300,
+                             offset_mean_atol=1e-2, offset_std_scale=1.0,
+                             offset_min_run=10, offset_adjust_ms=0):
+    d_sdf = np.diff(sdf)
+    d_sdf_range = np.ptp(d_sdf)
+    if d_sdf_range == 0:
+        return default_offset
+
+    d_norm_sdf = 2. * (d_sdf - np.min(d_sdf)) / d_sdf_range - 1
+    norm_mean = np.mean(d_norm_sdf)
+    norm_std = np.std(d_norm_sdf)
+    equals_mean = np.isclose(d_norm_sdf[onset:], norm_mean,
+                             atol=offset_mean_atol)
+    offsets = np.where(
+        d_norm_sdf[onset:] < (norm_mean - offset_std_scale * norm_std))[0]
+    if offsets.any():
+        potential_offsets = np.where(equals_mean[offsets[0]:] == 1)[0]
+        if potential_offsets.any():
+            seqs = 1 + np.where(np.diff(potential_offsets) != 1)[0]
+            offset_seqs = np.split(potential_offsets, seqs)
+            passing_offsets = np.where(
+                np.array([len(x) for x in offset_seqs]) >= offset_min_run)[0]
+            if passing_offsets.any():
+                offset = int(offset_seqs[passing_offsets[0]][0] +
+                             offsets[0] + onset)
+            else:
+                offset = int(offset_seqs[-1][0] + offsets[0] + onset)
+        else:
+            offset = int(offsets[0] + onset)
+    else:
+        offset = default_offset
+
+    if offset != default_offset and offset_adjust_ms:
+        offset = max(onset + 1, offset + offset_adjust_ms)
+        offset = min(default_offset, offset)
+    return offset
+
+
 def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True, *, max_t=250,
                         max_m=10, lat_start=1, lat_end=150, l_bound=4,
-                        u_bound=None, min_sig_bound=None, max_sig_bound=None):
+                        u_bound=None, min_sig_bound=None, max_sig_bound=None,
+                        offset_mean_atol=1e-2, offset_std_scale=1.0,
+                        offset_min_run=10, offset_adjust_ms=0):
     if u_bound is None:
         u_bound = max_m
     default_min_sig_bound, default_max_sig_bound = _densetc_signal_bounds(spont)
@@ -257,29 +297,14 @@ def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True, *, max_t=250,
     if (total_prob < 0.2) or (max_prob < 0.1):
         onset, peak, offset = 50, None, 300
     else:
-        d_sdf = np.diff(sdf)
-        d_norm_sdf = 2. * (d_sdf - np.min(d_sdf)) / np.ptp(d_sdf) - 1
-        norm_mean = np.mean(d_norm_sdf)
-        norm_std = np.std(d_norm_sdf)
-        equals_mean = np.isclose(d_norm_sdf[onset:], norm_mean, atol=1e-2)
-        offsets = np.where(d_norm_sdf[onset:] < (norm_mean - norm_std))[0]
-        if offsets.any():
-            potential_offsets = np.where(equals_mean[offsets[0]:] == 1)[0]
-            if potential_offsets.any():
-                seqs = 1 + np.where(np.diff(potential_offsets) != 1)[0]
-                offset_seqs = np.split(potential_offsets, seqs)
-                passing_offsets = np.where(
-                    np.array([len(x) for x in offset_seqs]) >= 10)[0]
-                if passing_offsets.any():
-                    offset = int(offset_seqs[passing_offsets[0]][0] +
-                                 offsets[0] + onset)
-                else:
-                    offset = int(offset_seqs[-1][0] + offsets[0] + onset)
-            else:
-                offset = int(offsets[0] + onset)
-        else:
+        if sdf is None:
             offset = 300
-
+        else:
+            offset = _densetc_offset_from_sdf(
+                sdf, onset, offset_mean_atol=offset_mean_atol,
+                offset_std_scale=offset_std_scale,
+                offset_min_run=offset_min_run,
+                offset_adjust_ms=offset_adjust_ms)
         peak = int(np.argmax(psth[onset:offset])) + onset
 
     return {

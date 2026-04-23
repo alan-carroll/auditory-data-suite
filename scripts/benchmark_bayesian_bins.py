@@ -47,6 +47,14 @@ def parse_args():
         default="densetc")
     parser.add_argument("--min-sig-bound", type=float)
     parser.add_argument("--max-sig-bound", type=float)
+    parser.add_argument("--offset-mean-atol", type=float, default=1e-2)
+    parser.add_argument("--offset-std-scale", type=float, default=1.0)
+    parser.add_argument("--offset-min-run", type=int, default=10)
+    parser.add_argument("--offset-adjust-ms", type=int, default=0)
+    parser.add_argument("--sweep-offset", action="store_true")
+    parser.add_argument("--sweep-min-run-range", default="1:15")
+    parser.add_argument("--sweep-adjust-range", default="-15:5")
+    parser.add_argument("--sweep-top", type=int, default=15)
     return parser.parse_args()
 
 
@@ -146,7 +154,45 @@ def analyze_site(module, site, n_sweeps, return_sdf, args):
     )
 
 
-def get_densetc_lats_from_result(site, result, lat_start):
+def get_densetc_offset(sdf, onset, args, default_offset=300):
+    d_sdf = np.diff(sdf)
+    d_sdf_range = np.ptp(d_sdf)
+    if d_sdf_range == 0:
+        return default_offset
+
+    d_norm_sdf = 2.0 * (d_sdf - np.min(d_sdf)) / d_sdf_range - 1
+    norm_mean = np.mean(d_norm_sdf)
+    norm_std = np.std(d_norm_sdf)
+    equals_mean = np.isclose(d_norm_sdf[onset:], norm_mean,
+                             atol=args.offset_mean_atol)
+    offsets = np.where(
+        d_norm_sdf[onset:] <
+        (norm_mean - args.offset_std_scale * norm_std))[0]
+    if offsets.any():
+        potential_offsets = np.where(equals_mean[offsets[0]:] == 1)[0]
+        if potential_offsets.any():
+            seqs = 1 + np.where(np.diff(potential_offsets) != 1)[0]
+            offset_seqs = np.split(potential_offsets, seqs)
+            passing_offsets = np.where(
+                np.array([len(x) for x in offset_seqs]) >=
+                args.offset_min_run)[0]
+            if passing_offsets.any():
+                offset = int(
+                    offset_seqs[passing_offsets[0]][0] + offsets[0] + onset)
+            else:
+                offset = int(offset_seqs[-1][0] + offsets[0] + onset)
+        else:
+            offset = int(offsets[0] + onset)
+    else:
+        offset = default_offset
+
+    if offset != default_offset and args.offset_adjust_ms:
+        offset = max(onset + 1, offset + args.offset_adjust_ms)
+        offset = min(default_offset, offset)
+    return offset
+
+
+def get_densetc_lats_from_result(site, result, lat_start, args):
     psth = np.array(site["psth"], dtype=np.int64)
     sdf = result["sdf"]
     lats = np.nan_to_num(result["lats"][lat_start:], nan=0.0, posinf=1.0,
@@ -163,42 +209,19 @@ def get_densetc_lats_from_result(site, result, lat_start):
     if (total_prob < 0.2) or (max_prob < 0.1):
         return 50, None, 300
 
-    d_sdf = np.diff(sdf)
-    d_norm_sdf = 2.0 * (d_sdf - np.min(d_sdf)) / np.ptp(d_sdf) - 1
-    norm_mean = np.mean(d_norm_sdf)
-    norm_std = np.std(d_norm_sdf)
-    equals_mean = np.isclose(d_norm_sdf[onset:], norm_mean, atol=1e-2)
-    offsets = np.where(d_norm_sdf[onset:] < (norm_mean - norm_std))[0]
-    if offsets.any():
-        potential_offsets = np.where(equals_mean[offsets[0]:] == 1)[0]
-        if potential_offsets.any():
-            seqs = 1 + np.where(np.diff(potential_offsets) != 1)[0]
-            offset_seqs = np.split(potential_offsets, seqs)
-            passing_offsets = np.where(
-                np.array([len(x) for x in offset_seqs]) >= 10)[0]
-            if passing_offsets.any():
-                offset = int(
-                    offset_seqs[passing_offsets[0]][0] + offsets[0] + onset)
-            else:
-                offset = int(offset_seqs[-1][0] + offsets[0] + onset)
-        else:
-            offset = int(offsets[0] + onset)
-    else:
-        offset = 300
-
+    offset = get_densetc_offset(sdf, onset, args)
     peak = int(np.argmax(psth[onset:offset])) + onset
     return onset, peak, offset
 
 
-def check_latencies(module, sites, n_sweeps, args):
+def score_latencies(site_results, args):
     matches = 0
     mismatches = []
     component_matches = {"onset": 0, "peak": 0, "offset": 0}
     abs_errors = {"onset": [], "peak": [], "offset": []}
-    for site in sites:
-        result = analyze_site(module, site, n_sweeps, return_sdf=True,
-                              args=args)
-        got = get_densetc_lats_from_result(site, result, args.lat_start)
+    for site, result in site_results:
+        got = get_densetc_lats_from_result(
+            site, result, args.lat_start, args)
         expected = (site["onset_ms"], site["peak_ms"], site["offset_ms"])
         for idx, key in enumerate(("onset", "peak", "offset")):
             if got[idx] == expected[idx]:
@@ -210,6 +233,52 @@ def check_latencies(module, sites, n_sweeps, args):
         else:
             mismatches.append((site["number"], expected, got))
     return matches, mismatches, component_matches, abs_errors
+
+
+def check_latencies(module, sites, n_sweeps, args):
+    site_results = [
+        (site, analyze_site(module, site, n_sweeps, return_sdf=True,
+                            args=args))
+        for site in sites
+    ]
+    return score_latencies(site_results, args)
+
+
+def parse_int_range(value):
+    start, end = (int(part) for part in value.split(":", maxsplit=1))
+    step = 1 if start <= end else -1
+    return range(start, end + step, step)
+
+
+def sweep_offsets(module, sites, n_sweeps, args):
+    site_results = [
+        (site, analyze_site(module, site, n_sweeps, return_sdf=True,
+                            args=args))
+        for site in sites
+    ]
+    rows = []
+    for offset_min_run in parse_int_range(args.sweep_min_run_range):
+        for offset_adjust_ms in parse_int_range(args.sweep_adjust_range):
+            sweep_args = types.SimpleNamespace(**vars(args))
+            sweep_args.offset_min_run = offset_min_run
+            sweep_args.offset_adjust_ms = offset_adjust_ms
+            score = score_latencies(site_results, sweep_args)
+            matches, _, component_matches, abs_errors = score
+            rows.append({
+                "offset_min_run": offset_min_run,
+                "offset_adjust_ms": offset_adjust_ms,
+                "matches": matches,
+                "offset_matches": component_matches["offset"],
+                "onset_matches": component_matches["onset"],
+                "peak_matches": component_matches["peak"],
+                "offset_mae": mean(abs_errors["offset"]),
+                "score": score,
+            })
+
+    rows.sort(key=lambda row: (
+        -row["matches"], row["offset_mae"], -row["offset_matches"],
+        abs(row["offset_adjust_ms"]), row["offset_min_run"]))
+    return rows
 
 
 def mean(values):
@@ -251,6 +320,20 @@ def main():
     for label in labels:
         module = load_module(label)
         print(f"\n[{label}]")
+        if args.sweep_offset:
+            rows = sweep_offsets(module, sites, n_sweeps, args)
+            for row in rows[:args.sweep_top]:
+                print(
+                    "offset_sweep "
+                    f"min_run={row['offset_min_run']} "
+                    f"adjust_ms={row['offset_adjust_ms']} "
+                    f"latency_matches={row['matches']}/{len(sites)} "
+                    f"component_matches="
+                    f"onset:{row['onset_matches']}/{len(sites)} "
+                    f"peak:{row['peak_matches']}/{len(sites)} "
+                    f"offset:{row['offset_matches']}/{len(sites)} "
+                    f"offset_mae={row['offset_mae']:.2f}")
+            continue
         if not args.skip_latency_check:
             matches, mismatches, component_matches, abs_errors = (
                 check_latencies(module, sites, n_sweeps, args)
