@@ -79,9 +79,12 @@ def nb_calc_m_priors(max_m, max_t, sigma, gamma):
 def nb_logsumexp(arr):
     return np.log(np.sum(np.exp(arr)))
 
-@nb.njit(fastmath=True, parallel=False)
+@nb.njit
 def nb_max_logsumexp(arr):
     max_val = np.max(arr)
+    if not np.isfinite(max_val):
+        return max_val
+
     return np.log(np.sum(np.exp(arr - max_val))) + max_val
 
 
@@ -370,7 +373,7 @@ def nb_calc_latency(big_e, m_priors, event_counts, num_sweeps, lat_start,
 def nb_para_calc_lats(big_e, m_priors, event_counts, num_sweeps, lat_start,
                       lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound,
                       signal):
-    results = np.empty(max_t)
+    results = np.zeros(max_t)
     for lat_idx in nb.prange(lat_start, lat_end):
         results[lat_idx] = nb_calc_latency(big_e, m_priors, event_counts, 
                                            num_sweeps, lat_start, lat_end, 
@@ -615,6 +618,7 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     lats = nb_para_calc_lats(big_e, m_priors, event_counts, n_sweeps, 
                              lat_start, lat_end, max_m, max_t, sigma, gamma, 
                              l_bound, u_bound, signal)
+    lats[np.isnan(lats)] = 0
     # Random cases may have rounding errors but should be treated as 1 or 0
     lats[1 < lats] = 1
     lats[lats < 0] = 0
