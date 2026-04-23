@@ -569,9 +569,8 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     Arguments:
     psth: Your PSTH, of course, silly. A numpy array, assuming 1 bin / ms.
     n_sweeps: The number of spiketrains that make up the PSTH.
-    spont: Spontaneous level of activity. Must specify spont or sigma/gamma and
-      min/max_sig_bound. If only spont is specified, will try to estimate good
-      values for sigma/gamma and min/max_sig_bound based on empirical use.
+    spont: Spontaneous level of activity. Must specify spont or sigma/gamma.
+      If only spont is specified, sigma/gamma are estimated from spont.
       spont should be specified as Hz value, and be at least 1 Hz (lower values
       create a lot of false positives results, in my experience).
     max_t: PSTH window to search for a latency over
@@ -583,11 +582,9 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     sigma/gamma: Essentially determine predicted firing rates.
       Think sigma==spikes/ms, gamma==non-spikes/ms.
       sigma=1, gamma=1000 -> 1 Hz spontaneous
-    min/max_sig_bound: The boundaries for the optimizer.
-      These should be modified at major differences in spontaneous activity.
-      aka. PSTH with 10 Hz spont will not have same signal as one with 100 Hz.
-      Default values of 0.001 and 0.025 essentially look for signal between
-      1 and 25 Hz firing rates.
+    min/max_sig_bound: The boundaries for the signal separator optimizer.
+      Defaults to C++ original 0.0 and 0.1. Application-specific callers may pass
+      narrower ranges when they have validated domain-specific expectations.
     return_sdf: Return a Spike Density, or not.
       Takes a minute to do, but is vry nice.
     
@@ -613,23 +610,10 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     if not u_bound:
         u_bound = max_m
         
-    if not min_sig_bound or not max_sig_bound:
-        # Full on empirical, your results may vary
-        # May work same/better by doing spont +/-, but that requires testing...
-        # These values are based on categorically distinct spont levels from
-        # categorically distinct neural populations, not an optimum +/- search.
-        if spont < 25:
-            min_sig_bound = 0.001
-            max_sig_bound = 0.025
-        elif spont < 50:
-            min_sig_bound = 0.025
-            max_sig_bound = 0.050
-        elif spont < 100:
-            min_sig_bound = 0.050
-            max_sig_bound = 0.100
-        else:
-            min_sig_bound = 0.100
-            max_sig_bound = 0.150
+    if min_sig_bound is None:
+        min_sig_bound = 0.0
+    if max_sig_bound is None:
+        max_sig_bound = 0.1
         
     event_counts = psth.cumsum()
     sdf_interval_evidences = None

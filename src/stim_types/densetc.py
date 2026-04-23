@@ -215,12 +215,33 @@ def _densetc_bw_loop(idx, file, total, use_f32, cfg, ic_pens=(),
     }
 
 
-def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True):
-    max_m = 10
-    lat_start = 1
-    bb_dict = bb.analyze_psth(psth, n_sweeps, spont, max_t=250, max_m=max_m,
-                              lat_start=lat_start, lat_end=150, l_bound=4,
-                              u_bound=max_m, return_sdf=return_sdf)
+def _densetc_signal_bounds(spont):
+    if spont < 25:
+        return 0.001, 0.025
+    if spont < 50:
+        return 0.025, 0.050
+    if spont < 100:
+        return 0.050, 0.100
+    return 0.100, 0.150
+
+
+def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True, *, max_t=250,
+                        max_m=10, lat_start=1, lat_end=150, l_bound=4,
+                        u_bound=None, min_sig_bound=None, max_sig_bound=None):
+    if u_bound is None:
+        u_bound = max_m
+    default_min_sig_bound, default_max_sig_bound = _densetc_signal_bounds(spont)
+    if min_sig_bound is None:
+        min_sig_bound = default_min_sig_bound
+    if max_sig_bound is None:
+        max_sig_bound = default_max_sig_bound
+
+    bb_dict = bb.analyze_psth(psth, n_sweeps, spont, max_t=max_t, max_m=max_m,
+                              lat_start=lat_start, lat_end=lat_end,
+                              l_bound=l_bound, u_bound=u_bound,
+                              min_sig_bound=min_sig_bound,
+                              max_sig_bound=max_sig_bound,
+                              return_sdf=return_sdf)
     sdf = bb_dict["sdf"]
     lats = np.nan_to_num(bb_dict["lats"][lat_start:], nan=0.0, posinf=1.0,
                          neginf=0.0)
