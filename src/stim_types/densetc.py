@@ -43,17 +43,17 @@ class DenseTCStimulus(StimulusType):
             df["intensity"].values).tolist()
         config_dict["densetc_num_tones"] = len(df)
 
-    def worker_kwargs(self, config_dict, analysis_id=None, final_file=None,
+    def worker_kwargs(self, config_dict, analysis_id=None, final_file_df=None,
                       return_sdf=True):
         return {
             "cfg": StimConfig.from_project_config(config_dict),
             "analysis_id": analysis_id,
-            "final_file": final_file,
+            "final_file_df": final_file_df,
             "return_sdf": return_sdf,
         }
 
     def analyze_file(self, idx, file, total, use_f32, ic_pens=(), cfg=None,
-                     analysis_id=None, final_file=None, return_sdf=True,
+                     analysis_id=None, final_file_df=None, return_sdf=True,
                      **kwargs):
         result = _densetc_bw_loop(
             idx=idx,
@@ -62,7 +62,7 @@ class DenseTCStimulus(StimulusType):
             use_f32=use_f32,
             cfg=cfg,
             ic_pens=ic_pens,
-            final_file=final_file,
+            final_file_df=final_file_df,
             return_sdf=return_sdf,
         )
         result["docs"]["analysis"]["analysis_id"] = analysis_id
@@ -70,7 +70,7 @@ class DenseTCStimulus(StimulusType):
 
 
 def _densetc_bw_loop(idx, file, total, use_f32, cfg, ic_pens=(),
-                     final_file=None, return_sdf=True):
+                     final_file_df=None, return_sdf=True):
     freqs = np.asarray(cfg.frequencies_hz)
     ints = np.asarray(cfg.intensities_db)
     n_sweeps = cfg.num_tones
@@ -100,8 +100,8 @@ def _densetc_bw_loop(idx, file, total, use_f32, cfg, ic_pens=(),
     }
     if return_sdf:
         latency_dict = get_densetc_bb_lats(psth, n_sweeps, spont)
-    elif final_file is not None:
-        row = final_file[final_file["number"] == map_number]
+    elif final_file_df is not None:
+        row = final_file_df[final_file_df["number"] == map_number]
         onset = int(row["onset"].values)
         if not onset:
             onset, peak, offset = 50, None, 300
@@ -128,8 +128,8 @@ def _densetc_bw_loop(idx, file, total, use_f32, cfg, ic_pens=(),
     if latency_dict["peak"] is None:
         peak_driven_rate = 0
 
-    elif final_file is not None:
-        row = final_file[final_file["number"] == map_number]
+    elif final_file_df is not None:
+        row = final_file_df[final_file_df["number"] == map_number]
         if row["cf"].values != 0:
             cf = afunc.snap_idx(freqs / 1000, row["cf"].values)
             cf_khz = freqs[cf] / 1000
