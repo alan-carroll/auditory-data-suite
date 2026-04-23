@@ -795,12 +795,49 @@ class FieldSelectionGUI(BoxLayout):
         self.load_popup = None
         self.load_popup_label = None
 
-    def _update_load_status(self):
-        if self._total_sites and self.load_popup_label is not None:
-            self.load_popup_label.text = (
-                "[b]Loading overview[/b]\n"
-                f"{self._rendered_sites}/{self._total_sites} sites"
-            )
+    def _display_field_for_site(self, site_number):
+        if self.marks_active:
+            return MARK_FIELD if site_number in self.map_sets[MARK_FIELD] else None
+        for field in FIELD_NAMES:
+            if site_number in self.map_sets[field]:
+                return field
+        return None
+
+    def _cell_visual_state(self, site_number, alpha=None, unsaved_changes=False):
+        if alpha is None:
+            alpha = self.field_alpha_slider.value_normalized
+
+        if unsaved_changes:
+            line_rgb = hex2rgb(self.unsaved_line_color)[:3]
+            fill_rgba = hex2rgb(self.unsaved_mesh_color)
+            fill_rgba[3] = alpha
+            return {
+                "line_width": 5,
+                "line_rgb": line_rgb,
+                "fill_rgba": fill_rgba,
+            }
+
+        field = self._display_field_for_site(site_number)
+        if field is None:
+            return {
+                "line_width": 1.5,
+                "line_rgb": list(DEFAULT_SITE_LINE_RGB),
+                "fill_rgba": [*DEFAULT_SITE_FILL_RGB, alpha],
+            }
+
+        fill_rgba = hex2rgb(self.field_colors[field])
+        fill_rgba[3] = alpha
+        return {
+            "line_width": 3,
+            "line_rgb": hex2rgb(self.field_line_colors[field])[:3],
+            "fill_rgba": fill_rgba,
+        }
+
+    def _paint_cell(self, site_number, alpha=None):
+        state = self._cell_visual_state(site_number, alpha=alpha)
+        self.vor_lines[site_number].line.width = state["line_width"]
+        self.vor_lines[site_number].color.rgb = state["line_rgb"]
+        self.vor_meshes[site_number].color.rgba = state["fill_rgba"]
 
     def _center_scroll_view(self, _dt=0):
         if self.scroll.width <= 0 or self.scroll.height <= 0:
@@ -981,25 +1018,7 @@ class FieldSelectionGUI(BoxLayout):
                 return
 
             for site in self.sites:
-                site_number = site["number"]
-                field_assigned = False
-                for field in self.fields:
-                    if field == MARK_FIELD:
-                        continue
-                    if site_number in self.map_sets[field]:
-                        field_assigned = True
-                        self.vor_meshes[site_number].color.rgb = \
-                            hex2rgb(self.field_colors[field])
-                        self.vor_meshes[site_number].color.a = alpha_value
-                        self.vor_lines[site_number].line.width = 3
-                        self.vor_lines[site_number].color.rgb = \
-                            hex2rgb(self.field_line_colors[field])
-                if not field_assigned:
-                    # Leave site blank if no field has been assigned yet.
-                    self.vor_meshes[site_number].color.rgb = DEFAULT_SITE_FILL_RGB
-                    self.vor_lines[site_number].line.width = 1.5
-                    self.vor_lines[site_number].color.rgb = \
-                        DEFAULT_SITE_LINE_RGB
+                self._paint_cell(site["number"], alpha=alpha_value)
 
         # Handle visibility of sites
         self.on_hide_field("field_selection")
@@ -1015,19 +1034,7 @@ class FieldSelectionGUI(BoxLayout):
                 return
 
             for site in self.sites:
-                site_number = site["number"]
-                if site_number in self.map_sets[MARK_FIELD]:
-                    self.vor_meshes[site_number].color.rgb = \
-                        hex2rgb(self.field_colors[MARK_FIELD])
-                    self.vor_meshes[site_number].color.a = alpha_value
-                    self.vor_lines[site_number].line.width = 3
-                    self.vor_lines[site_number].color.rgb = \
-                        hex2rgb(self.field_line_colors[MARK_FIELD])
-                else:
-                    self.vor_meshes[site_number].color.rgb = DEFAULT_SITE_FILL_RGB
-                    self.vor_lines[site_number].line.width = 1.5
-                    self.vor_lines[site_number].color.rgb = \
-                        DEFAULT_SITE_LINE_RGB
+                self._paint_cell(site["number"], alpha=alpha_value)
 
         # Handle visibility of sites
         self.on_hide_field("field_selection")
@@ -1310,17 +1317,9 @@ class FieldSelectionGUI(BoxLayout):
         self.plot_dict[site_number] = site_plot
         self.map_canvas.add_widget(site_plot)
         with self.map_canvas.canvas.before:
-            if site_analysis["field_assignment"] and not self.marks_active:
-                line_color = Color(*hex2rgb(
-                    self.field_line_colors[site_analysis["field_assignment"]]))
-                lw = 3
-            elif site_analysis["marked"] and self.marks_active:
-                line_color = Color(*hex2rgb(
-                    self.field_line_colors[MARK_FIELD]))
-                lw = 3
-            else:
-                line_color = Color(*DEFAULT_SITE_LINE_RGBA)
-                lw = 1.5
+            visual_state = self._cell_visual_state(site_number)
+            line_color = Color(*visual_state["line_rgb"], 1)
+            lw = visual_state["line_width"]
 
             poly_norm_points = site["voronoi_vertices"]
             poly_x = [pnt[0] * (reduced_scale[1] - reduced_scale[0]) /
@@ -1342,13 +1341,7 @@ class FieldSelectionGUI(BoxLayout):
             ]))
             indices = list(range(len(poly_x_adjusted)))
 
-            if site_analysis["field_assignment"] and not self.marks_active:
-                mesh_color = Color(*hex2rgb(
-                    self.field_colors[site_analysis["field_assignment"]]))
-            elif site_analysis["marked"] and self.marks_active:
-                mesh_color = Color(*hex2rgb(self.field_colors[MARK_FIELD]))
-            else:
-                mesh_color = Color(*DEFAULT_SITE_FILL_RGBA)
+            mesh_color = Color(*visual_state["fill_rgba"])
 
             mesh_ = Mesh(vertices=mesh_adjusted_points, indices=indices,
                          mode="triangle_fan")
@@ -1390,31 +1383,14 @@ class FieldSelectionGUI(BoxLayout):
         self.flash_mesh = self.vor_meshes[map_number]
         alpha_value = self.field_alpha_slider.value_normalized
         if unsaved_changes:
-            self.flash_lw = 5
-            self.flash_line_color = hex2rgb(self.unsaved_line_color)
-            self.flash_mesh_color = hex2rgb(self.unsaved_mesh_color)
-            self.flash_mesh_color[3] = alpha_value
+            visual_state = self._cell_visual_state(
+                map_number, alpha=alpha_value, unsaved_changes=True)
         else:
-            field_assigned = False
-            for field in self.fields:
-                if self.marks_active:  # Ignore auditory fields
-                    if field != MARK_FIELD:
-                        continue
-                elif field == MARK_FIELD:  # Ignore if marks marks_active is False
-                    continue
+            visual_state = self._cell_visual_state(map_number, alpha=alpha_value)
 
-                if map_number in self.map_sets[field]:
-                    field_assigned = True
-                    self.flash_lw = 3
-                    self.flash_line_color = hex2rgb(
-                        self.field_line_colors[field])
-                    self.flash_mesh_color = hex2rgb(self.field_colors[field])
-                    self.flash_mesh_color[3] = alpha_value
-
-            if not field_assigned:
-                self.flash_lw = 1.5
-                self.flash_line_color = DEFAULT_SITE_LINE_RGB
-                self.flash_mesh_color = [*DEFAULT_SITE_FILL_RGB, alpha_value]
+        self.flash_lw = visual_state["line_width"]
+        self.flash_line_color = visual_state["line_rgb"]
+        self.flash_mesh_color = visual_state["fill_rgba"]
 
         self.flash_clock_event = Clock.schedule_interval(self.flash_callback, 
                                                          FLASH_INTERVAL_S)
@@ -1552,16 +1528,10 @@ class MapLayout(FloatLayout):
 
             if gui.toggle.state == "down":
                 # --- Select: assign the active field/Mark to this site ---
-                line_.line.width = 3
                 chosen = gui.field_spinner.text
                 for field in gui.fields:
                     if field == chosen:
                         gui.map_sets[field].add(site_num)
-                        gui.vor_meshes[site_num].color.rgb = \
-                            hex2rgb(gui.field_colors[field])
-                        gui.vor_meshes[site_num].color.a = alpha
-                        line_.color.rgb = \
-                            hex2rgb(gui.field_line_colors[field])
                         # If Hide-<field> is toggled, re-evaluate visibility
                         # now that this site belongs to it — lets the user
                         # progressively select-then-hide. The string arg is
@@ -1574,13 +1544,11 @@ class MapLayout(FloatLayout):
                         if gui.marks_active or field == MARK_FIELD:
                             continue
                         gui.map_sets[field].discard(site_num)
+                gui._paint_cell(site_num, alpha=alpha)
+                gui._refresh_site_dirty_state(site_num)
 
             elif gui.deselect_toggle.state == "down":
                 # --- Deselect: strip assignment, repaint as blank ---
-                line_.color.rgb = DEFAULT_SITE_LINE_RGB
-                line_.line.width = 1.5
-                gui.vor_meshes[site_num].color.rgb = DEFAULT_SITE_FILL_RGB
-                gui.vor_meshes[site_num].color.a = alpha
                 for field in gui.fields:
                     # Same as selection rule above
                     if field == MARK_FIELD and not gui.marks_active:
@@ -1588,6 +1556,8 @@ class MapLayout(FloatLayout):
                     if field != MARK_FIELD and gui.marks_active:
                         continue
                     gui.map_sets[field].discard(site_num)
+                gui._paint_cell(site_num, alpha=alpha)
+                gui._refresh_site_dirty_state(site_num)
 
             elif gui.show_figure_toggle.state == "down":
                 plot = gui.plot_dict[site_num]
