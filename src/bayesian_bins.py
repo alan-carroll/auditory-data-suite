@@ -1,5 +1,10 @@
+import os
 from llvmlite import binding
-binding.set_option('SVML', '-vector-library=SVML')
+
+# SVML is not available in all environments (notably Apple Silicon worker
+# processes here). Keep it opt-in so JIT compilation stays portable.
+if os.environ.get("ADS_ENABLE_SVML") == "1":
+    binding.set_option('SVML', '-vector-library=SVML')
 
 import numpy as np
 from scipy.optimize import minimize_scalar
