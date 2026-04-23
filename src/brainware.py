@@ -93,6 +93,30 @@ def adjust_numbers(number):
     map_number = 4 * (penetration_number - 1) + electrode_number
     return map_number
 
+
+def _segment_group_spikes(blk, seg_idx):
+    """
+    Fallback for `.src` files under newer neo versions where per-segment
+    spiketrains are omitted and the sweep-aligned trains only live on the
+    Block groups. Match the old `seg.spiketrains[1]` intent by preferring the
+    first non-"UnassignedSpikes" group.
+
+    This keeps compatibility across neo layouts:
+      * older layouts exposed sweep spikes on `seg.spiketrains`
+      * neo 0.14.4 exposes the same sweep-aligned spikes on `blk.groups`
+    """
+    spike_idx = seg_idx - 1  # seg 0 is the comments segment
+    if spike_idx < 0:
+        return None
+
+    for group in getattr(blk, "groups", []):
+        if getattr(group, "name", None) == "UnassignedSpikes":
+            continue
+        spiketrains = getattr(group, "spiketrains", [])
+        if spike_idx < len(spiketrains):
+            return spiketrains[spike_idx].times.magnitude.tolist()
+    return None
+
 def get_spike_dict(blk, use_f32=False, dataset=None):
     """
     Takes a block (neo-processed brainware file) and a 'dataset' for a 
@@ -134,7 +158,7 @@ def get_spike_dict(blk, use_f32=False, dataset=None):
     params = known_datasets[dataset]
     
     spike_dict = defaultdict(list)
-    for seg in blk.segments:
+    for seg_idx, seg in enumerate(blk.segments):
         try:
             if use_f32:
                 key = tuple(int(seg.annotations[p]) for p in params["f32"])
@@ -144,11 +168,33 @@ def get_spike_dict(blk, use_f32=False, dataset=None):
                 idx = 1
             # Calling tolist() removes neo-added Quantities metadata unit (ms)
             # It does not serialize during data storage
-            spikes = seg.spiketrains[idx].times.magnitude.tolist()
+            if len(seg.spiketrains) <= idx:
+                fallback_spikes = _segment_group_spikes(blk, seg_idx)
+                if fallback_spikes is not None:
+                    spikes = fallback_spikes
+                elif len(seg.spiketrains) == 0:
+                    # Recent neo versions can omit empty per-segment spike
+                    # trains entirely for no-spike sweeps. Keep the sweep as []
+                    # instead of crashing so non-responsive sites remain
+                    # analyzable.
+                    spikes = []
+                else:
+                    raise IndexError
+            else:
+                spikes = seg.spiketrains[idx].times.magnitude.tolist()
             spike_dict[key].append(spikes)
         except KeyError:
             # Skip any segment that is empty or metadata
             continue
+        except IndexError as e:
+            raise IndexError(
+                "Segment spiketrain index out of range while parsing "
+                f"{getattr(blk, 'file_origin', '<unknown file>')!r} "
+                f"for dataset={dataset!r}, use_f32={use_f32}. "
+                f"segment_index={seg_idx}, requested_spiketrain_index={idx}, "
+                f"available_spiketrains={len(seg.spiketrains)}, "
+                f"annotation_keys={sorted(seg.annotations.keys())}"
+            ) from e
         
     return spike_dict
 
