@@ -88,10 +88,31 @@ def nb_max_logsumexp(arr):
     return np.log(np.sum(np.exp(arr - max_val))) + max_val
 
 
+@nb.njit(nogil=True, parallel=True)
+def nb_precompute_interval_evidences(event_counts, num_sweeps, max_t, sigma,
+                                     gamma):
+    # This mirrors the original C++ cache: each DP pass reuses the same
+    # interval beta evidence values many times.
+    interval_evidences = np.zeros((max_t, max_t))
+
+    for start_idx in nb.prange(max_t):
+        if start_idx == 0:
+            prev_events = 0
+        else:
+            prev_events = event_counts[start_idx - 1]
+
+        for end_idx in range(start_idx, max_t):
+            events = event_counts[end_idx] - prev_events
+            gaps = num_sweeps*(end_idx - start_idx + 1) - events
+            interval_evidences[start_idx, end_idx] = nb_betaln(
+                events + sigma, gaps + gamma)
+
+    return interval_evidences
+
+
 # Big E
 @nb.jit
-def nb_big_e_k_func(sub_e, m, event_counts, num_sweeps, sigma, gamma, length, 
-                    max_t):
+def nb_big_e_k_func(sub_e, m, interval_evidences, length, max_t):
     """
     Big E
     Define k-loop func
@@ -109,15 +130,7 @@ def nb_big_e_k_func(sub_e, m, event_counts, num_sweeps, sigma, gamma, length,
         else:
             # All other cases proceed to their r-funcs
             r_idx = np.arange(m, k_idx)
-            events = event_counts[k_idx] - event_counts[r_idx]
-            gaps = num_sweeps*(k_idx - r_idx) - events
-            
-            # Calculate 'running_val'
-            # Using vec betaln so it can have arrays instead of writing
-            # another loop, but this may be inefficient or slower than 
-            # explicitly using JIT + for loop
-            running_val = sub_e[r_idx] + vec_betaln((events + sigma), 
-                                                    (gaps + gamma))
+            running_val = sub_e[r_idx] + interval_evidences[r_idx + 1, k_idx]
 
             new_sub_e[k_idx] = nb_max_logsumexp(running_val)
 
@@ -126,7 +139,7 @@ def nb_big_e_k_func(sub_e, m, event_counts, num_sweeps, sigma, gamma, length,
 
 
 @nb.jit
-def calc_sub_e_parallel(event_counts, num_sweeps, max_t, sigma, gamma):
+def calc_sub_e_parallel(interval_evidences, max_t):
     """
     JITing initial big E sub_e calculation just to be explicit about
     parallelization. I don't know if numba would be upset about it or not,
@@ -137,20 +150,16 @@ def calc_sub_e_parallel(event_counts, num_sweeps, max_t, sigma, gamma):
     sub_e = np.zeros(max_t)
     
     for k_end in nb.prange(max_t):
-        events = event_counts[k_end]
-        gaps = num_sweeps*(k_end+1) - events
-        
-        sub_e[k_end] = nb_betaln((events + sigma), (gaps + gamma))
+        sub_e[k_end] = interval_evidences[0, k_end]
                     
     return sub_e
 
 
 # Big E main function call
 @nb.jit
-def nb_calc_big_e(m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
-                  gamma):
+def nb_calc_big_e(m_priors, interval_evidences, max_m, max_t):
 
-    sub_e = calc_sub_e_parallel(event_counts, num_sweeps, max_t, sigma, gamma)
+    sub_e = calc_sub_e_parallel(interval_evidences, max_t)
     big_e = np.zeros(max_m + 1)
     big_e[0] = sub_e[-1] + m_priors[0]
     
@@ -162,8 +171,7 @@ def nb_calc_big_e(m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
             length = m
             
         # Now k-loop!
-        sub_e = nb_big_e_k_func(sub_e, m, event_counts, num_sweeps, sigma, 
-                                gamma, length, max_t)
+        sub_e = nb_big_e_k_func(sub_e, m, interval_evidences, length, max_t)
 
         # Finish m-iteration with big_e update
         big_e[m+1] = sub_e[-1] + m_priors[m+1]
@@ -174,9 +182,9 @@ def nb_calc_big_e(m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
 # Calculate m_latsum for signal probability estimation
 # (use with function optimizer like scipy minimize_scalar)
 @nb.njit(nogil=True, fastmath=True)
-def nb_calc_m_latsum(big_e, m_priors, event_counts, num_sweeps, lat_start, 
-                     lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, 
-                     signal):
+def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
+                     num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
+                     gamma, l_bound, u_bound, signal):
 
     m_latsum = np.zeros(max_m)
     lat_sub_e = np.zeros(max_t)
@@ -191,7 +199,7 @@ def nb_calc_m_latsum(big_e, m_priors, event_counts, num_sweeps, lat_start,
     for k_end in nb.prange(max_t):
         events = event_counts[k_end]
         gaps = num_sweeps*(k_end+1) - events
-        lat_sub_e[k_end] = vec_betaln((events + sigma), (gaps + gamma)) + \
+        lat_sub_e[k_end] = interval_evidences[0, k_end] + \
             np.log(nb_betainc((events + sigma), (gaps + gamma), signal))
             
     lat_sub_e_initial = lat_sub_e.copy()
@@ -220,21 +228,26 @@ def nb_calc_m_latsum(big_e, m_priors, event_counts, num_sweeps, lat_start,
                         if lat_sub_e[r_idx] == 0:
                             continue
                         else:
-                            running_val[r_idx] = lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma))
+                            running_val[r_idx] = (
+                                lat_sub_e[r_idx] +
+                                interval_evidences[r_idx + 1, k_idx])
                     elif sub_m < m:
                         if lat_sub_e[r_idx] == 0:
                             continue
                         else:
-                            running_val[r_idx] = lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma)) + np.log(
-                                nb_betainc(events+sigma, gaps+gamma, signal)) 
+                            running_val[r_idx] = (
+                                lat_sub_e[r_idx] +
+                                interval_evidences[r_idx + 1, k_idx] +
+                                np.log(nb_betainc(
+                                    events + sigma, gaps + gamma, signal)))
                     elif (r_idx < lat_start) or (r_idx > lat_end):
                         continue
                     else:
-                        running_val[r_idx] = lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma)) + np.log(1 - \
-                                nb_betainc(events+sigma, gaps+gamma, signal))
+                        running_val[r_idx] = (
+                            lat_sub_e[r_idx] +
+                            interval_evidences[r_idx + 1, k_idx] +
+                            np.log(1 - nb_betainc(
+                                events + sigma, gaps + gamma, signal)))
                             
                 # running_val window to sum over changes depending on 
                 # sub_m, k, lat_start, and lat_end (Must window correctly, 
@@ -285,9 +298,9 @@ def nb_calc_m_latsum(big_e, m_priors, event_counts, num_sweeps, lat_start,
 
 # Latency
 @nb.njit(nogil=True, fastmath=True)
-def nb_calc_latency(big_e, m_priors, event_counts, num_sweeps, lat_start, 
-                    lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, 
-                    signal, lat_idx):
+def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
+                    num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
+                    gamma, l_bound, u_bound, signal, lat_idx):
     
     lat_sub_e = np.zeros(max_t)
     running_val = np.zeros(max_t)
@@ -295,7 +308,7 @@ def nb_calc_latency(big_e, m_priors, event_counts, num_sweeps, lat_start,
     for k_end in nb.prange(lat_idx):
         events = event_counts[k_end]
         gaps = num_sweeps*(k_end+1) - events
-        lat_sub_e[k_end] = vec_betaln((events + sigma), (gaps + gamma)) + \
+        lat_sub_e[k_end] = interval_evidences[0, k_end] + \
             np.log(nb_betainc((events + sigma), (gaps + gamma), signal))
     
     lat_big_e = m_priors.copy()
@@ -322,22 +335,27 @@ def nb_calc_latency(big_e, m_priors, event_counts, num_sweeps, lat_start,
                     if lat_sub_e[r_idx] == 0:
                         continue
                     else:
-                        running_val[r_idx] = lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma))
+                        running_val[r_idx] = (
+                            lat_sub_e[r_idx] +
+                            interval_evidences[r_idx + 1, k_idx])
                 elif k_idx < lat_idx:
                     if lat_sub_e[r_idx] == 0:
                         continue
                     else:
-                        running_val[r_idx] =  lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma)) + np.log(
-                                nb_betainc(events+sigma, gaps+gamma, signal)) 
+                        running_val[r_idx] = (
+                            lat_sub_e[r_idx] +
+                            interval_evidences[r_idx + 1, k_idx] +
+                            np.log(nb_betainc(
+                                events + sigma, gaps + gamma, signal)))
                 elif ((r_idx+1)==lat_idx):
                     if lat_sub_e[r_idx] == 0:
                         continue
                     else:
-                        running_val[r_idx] =  lat_sub_e[r_idx] + vec_betaln(
-                            (events + sigma), (gaps + gamma)) + np.log(1 - \
-                                nb_betainc(events+sigma, gaps+gamma, signal))
+                        running_val[r_idx] = (
+                            lat_sub_e[r_idx] +
+                            interval_evidences[r_idx + 1, k_idx] +
+                            np.log(1 - nb_betainc(
+                                events + sigma, gaps + gamma, signal)))
                 else:
                     continue
             
@@ -370,15 +388,15 @@ def nb_calc_latency(big_e, m_priors, event_counts, num_sweeps, lat_start,
 
 
 @nb.njit(nogil=True, parallel=True)
-def nb_para_calc_lats(big_e, m_priors, event_counts, num_sweeps, lat_start,
-                      lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound,
-                      signal):
+def nb_para_calc_lats(big_e, m_priors, interval_evidences, event_counts,
+                      num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
+                      gamma, l_bound, u_bound, signal):
     results = np.zeros(max_t)
     for lat_idx in nb.prange(lat_start, lat_end):
-        results[lat_idx] = nb_calc_latency(big_e, m_priors, event_counts, 
-                                           num_sweeps, lat_start, lat_end, 
-                                           max_m, max_t, sigma, gamma, l_bound, 
-                                           u_bound, signal, lat_idx)
+        results[lat_idx] = nb_calc_latency(
+            big_e, m_priors, interval_evidences, event_counts, num_sweeps,
+            lat_start, lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound,
+            signal, lat_idx)
         
     return results
 
@@ -386,7 +404,8 @@ def nb_para_calc_lats(big_e, m_priors, event_counts, num_sweeps, lat_start,
 
 # SDF
 @nb.vectorize(target='cpu')
-def nb_cython_r_calc(sub_e_val, r_idx, sdf_idx, k, events, gaps, sigma, gamma):
+def nb_cython_r_calc(sub_e_val, r_idx, sdf_idx, k, events, gaps,
+                     interval_evidence, sigma, gamma):
     """
     Define r-loop func.
     Currently this is a 'vectorized u-func', in order to avoid using for loops
@@ -400,16 +419,16 @@ def nb_cython_r_calc(sub_e_val, r_idx, sdf_idx, k, events, gaps, sigma, gamma):
         return 0
 
     if r_idx < sdf_idx <= k:
-        return sub_e_val + vec_betaln((events + sigma), (gaps + gamma)) + \
+        return sub_e_val + interval_evidence + \
             np.log(sigma + events) - np.log(sigma + gamma + events + gaps)
     
     else:
-        return sub_e_val + vec_betaln((events + sigma), (gaps + gamma))
+        return sub_e_val + interval_evidence
 
 
 @nb.njit(nogil=True, fastmath=True)
-def nb_k_func(sdf_sub_e, sdf_idx, sub_m, event_counts, num_sweeps, sigma, 
-              gamma, length, max_t):
+def nb_k_func(sdf_sub_e, sdf_idx, sub_m, interval_evidences, event_counts,
+              num_sweeps, sigma, gamma, length, max_t):
     """
     Define k-loop func.
     Literally just run the calc r function for each value of k in t_k_idx now.
@@ -431,7 +450,10 @@ def nb_k_func(sdf_sub_e, sdf_idx, sub_m, event_counts, num_sweeps, sigma,
             
             # Vectorized r-loop
             running_val = nb_cython_r_calc(sdf_sub_e[r_idx], r_idx, sdf_idx, 
-                                           k_idx, events, gaps, sigma, gamma)
+                                           k_idx, events, gaps,
+                                           interval_evidences[r_idx + 1,
+                                                              k_idx],
+                                           sigma, gamma)
             
             # logsumexp running_val
             running_val_max = np.max(running_val)
@@ -442,7 +464,8 @@ def nb_k_func(sdf_sub_e, sdf_idx, sub_m, event_counts, num_sweeps, sigma,
 
 
 @nb.njit(nogil=True, fastmath=True)
-def calc_sdf_sub_e(sdf_idx, event_counts, num_sweeps, max_t, sigma, gamma):
+def calc_sdf_sub_e(sdf_idx, interval_evidences, event_counts, num_sweeps,
+                   max_t, sigma, gamma):
     """
     SDF sub_E initial calculation JIT. Only called once per SDF, but there are
     a lot of SDF calls, so little differences add up.
@@ -455,20 +478,20 @@ def calc_sdf_sub_e(sdf_idx, event_counts, num_sweeps, max_t, sigma, gamma):
         gaps = num_sweeps*(k_end+1) - events
         
         if sdf_idx <= k_end:
-            sdf_sub_e[k_end] = vec_betaln((events + sigma), (gaps + gamma)) + \
+            sdf_sub_e[k_end] = interval_evidences[0, k_end] + \
                 np.log(sigma + events) - np.log(sigma + gamma + events + gaps)
         else:
-            sdf_sub_e[k_end] = vec_betaln((events + sigma), (gaps + gamma))
+            sdf_sub_e[k_end] = interval_evidences[0, k_end]
                     
     return sdf_sub_e
 
 
 # Defining SDF main function call for each SDF index.
 @nb.njit
-def nb_calc_sdf(big_e, m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
-                gamma, l_bound, u_bound, sdf_idx):
-    sdf_sub_e = calc_sdf_sub_e(sdf_idx, event_counts, num_sweeps, max_t, sigma,
-                               gamma)
+def nb_calc_sdf(big_e, m_priors, interval_evidences, event_counts, num_sweeps,
+                max_m, max_t, sigma, gamma, l_bound, u_bound, sdf_idx):
+    sdf_sub_e = calc_sdf_sub_e(sdf_idx, interval_evidences, event_counts,
+                               num_sweeps, max_t, sigma, gamma)
     sdf_big_e = np.zeros(max_m + 1)
     sdf_big_e[0] = sdf_sub_e[-1] + m_priors[0]
     
@@ -484,8 +507,9 @@ def nb_calc_sdf(big_e, m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
         # it is supposed to (depending on the value of k within the 'k-loop'). 
         # The returned 'new' sdf_sub_e should therefore still have the correct
         # sizing.
-        sdf_sub_e = nb_k_func(sdf_sub_e, sdf_idx, sub_m, event_counts, 
-                              num_sweeps, sigma, gamma, length, max_t)
+        sdf_sub_e = nb_k_func(sdf_sub_e, sdf_idx, sub_m, interval_evidences,
+                              event_counts, num_sweeps, sigma, gamma, length,
+                              max_t)
         sdf_big_e[sub_m+1] = sdf_sub_e[-1] + m_priors[sub_m+1]
         
     sdf_big_e_val_max = np.max(sdf_big_e[l_bound:(u_bound+1)])
@@ -501,8 +525,9 @@ def nb_calc_sdf(big_e, m_priors, event_counts, num_sweeps, max_m, max_t, sigma,
 
 
 @nb.njit(nogil=True, parallel=True)
-def get_sdf(t_big_e, t_m_priors, t_event_counts, t_num_sweeps, t_max_m, 
-            t_max_t, t_sigma, t_gamma, t_l_bound, t_u_bound):
+def get_sdf(t_big_e, t_m_priors, t_interval_evidences, t_event_counts,
+            t_num_sweeps, t_max_m, t_max_t, t_sigma, t_gamma, t_l_bound,
+            t_u_bound):
     """
     Simple JIT for the for loop involved in calculating an entire SDF curve
     Don't know if this is really faster or not yet, but it doesn't hurt and it
@@ -510,9 +535,10 @@ def get_sdf(t_big_e, t_m_priors, t_event_counts, t_num_sweeps, t_max_m,
     """
     t_sdf = np.zeros(t_max_t)
     for sdf_idx in nb.prange(t_max_t):
-        t_sdf[sdf_idx] = nb_calc_sdf(t_big_e, t_m_priors, t_event_counts,
-                                     t_num_sweeps, t_max_m, t_max_t, t_sigma,
-                                     t_gamma, t_l_bound, t_u_bound, sdf_idx)
+        t_sdf[sdf_idx] = nb_calc_sdf(
+            t_big_e, t_m_priors, t_interval_evidences, t_event_counts,
+            t_num_sweeps, t_max_m, t_max_t, t_sigma, t_gamma, t_l_bound,
+            t_u_bound, sdf_idx)
 
     return t_sdf
 
@@ -600,14 +626,14 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
         
     event_counts = psth.cumsum()    
     m_priors = nb_calc_m_priors(max_m, max_t, sigma, gamma)
-    big_e = nb_calc_big_e(m_priors, event_counts, n_sweeps, max_m, max_t, 
-                          sigma, gamma)
+    interval_evidences = nb_precompute_interval_evidences(
+        event_counts, n_sweeps, max_t, sigma, gamma)
+    big_e = nb_calc_big_e(m_priors, interval_evidences, max_m, max_t)
 
     # func returns 1-p, since scipy uses a minimizer for optimization
-    func = lambda sig: nb_calc_m_latsum(big_e, m_priors, event_counts,
-                                        n_sweeps, lat_start, lat_end, max_m,
-                                        max_t, sigma, gamma, l_bound, u_bound,
-                                        sig)
+    func = lambda sig: nb_calc_m_latsum(
+        big_e, m_priors, interval_evidences, event_counts, n_sweeps, lat_start,
+        lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, sig)
     result = minimize_scalar(func, bounds=(min_sig_bound, max_sig_bound),
                              method="bounded", options={"maxiter": 30})
     # Probability that neural response exists at given signal level
@@ -615,9 +641,9 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     total_prob = 1 - result.fun
     
     # Array of len max_t with probs of latency existing for each time idx
-    lats = nb_para_calc_lats(big_e, m_priors, event_counts, n_sweeps, 
-                             lat_start, lat_end, max_m, max_t, sigma, gamma, 
-                             l_bound, u_bound, signal)
+    lats = nb_para_calc_lats(
+        big_e, m_priors, interval_evidences, event_counts, n_sweeps, lat_start,
+        lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, signal)
     lats[np.isnan(lats)] = 0
     # Random cases may have rounding errors but should be treated as 1 or 0
     lats[1 < lats] = 1
@@ -628,10 +654,11 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
         # Must re-calculate some variables to use entire PSTH sweep length
         max_t = len(psth)
         m_priors = nb_calc_m_priors(max_m, max_t, sigma, gamma)
-        big_e = nb_calc_big_e(m_priors, event_counts, n_sweeps, max_m, max_t, 
-                              sigma, gamma)
-        sdf = get_sdf(big_e, m_priors, event_counts, n_sweeps, max_m, max_t, 
-                      sigma, gamma, l_bound, u_bound)
+        interval_evidences = nb_precompute_interval_evidences(
+            event_counts, n_sweeps, max_t, sigma, gamma)
+        big_e = nb_calc_big_e(m_priors, interval_evidences, max_m, max_t)
+        sdf = get_sdf(big_e, m_priors, interval_evidences, event_counts,
+                      n_sweeps, max_m, max_t, sigma, gamma, l_bound, u_bound)
     else:
         sdf = None
     
