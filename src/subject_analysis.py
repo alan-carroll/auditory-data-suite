@@ -347,8 +347,11 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
     db_sites = db.sites
     db_analysis_metadata = db.analysis_metadata
 
-    meta_id = db_metadata.insert_one({"program_version": analysis_version,
-                                      "program_run_date": today}).inserted_id
+    meta_id = db_metadata.insert_one({
+        "program_version": analysis_version,
+        "program_run_date": today,
+        "project_configuration": config_dict,
+    }).inserted_id
     if final_file is not None:
         analysis_comment = "Tuning curve analysis generated from a final file"
     else:
@@ -357,7 +360,6 @@ def run_program(config_dict, version, final_file=None, return_sdf=True):
         "name": analysis_version,
         "start_date": today,
         "last_modified": today,
-        "configuration": config_dict,
         "frozen": True,
         "comments": analysis_comment,
     }).inserted_id

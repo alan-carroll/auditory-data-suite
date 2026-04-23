@@ -24,7 +24,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
 import cmocean
-from db_adapter import JSONStore
+from db_adapter import JSONStore, get_project_config
 from field_definitions import (
     FIELD_FILL_COLORS,
     FIELD_LINE_COLORS,
@@ -955,11 +955,8 @@ class FieldSelectionGUI(BoxLayout):
                     self.subject_database.densetc_analysis
 
             # --- Project configuration -------------------------------
-            # Expect exactly one analysis metadata doc to carry a
-            # configuration (the auto-analysis run).
-            self.project_configuration = \
-                self.analysis_metadata_collection.find_one(
-                    {"configuration": {"$exists": True}})["configuration"]
+            self.project_configuration = get_project_config(
+                self.subject_database)
 
             # --- Sites, data, analysis -------------------------------
             if is_ic:

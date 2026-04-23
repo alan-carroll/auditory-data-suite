@@ -13,8 +13,9 @@ Supported:
     coll.find({})                                      # all docs
     coll.find({"analysis_id": x, "number": 3})         # equality filter(s), AND-ed
     coll.find_one({...})                               # first match or None
-    coll.find_one({"configuration": {"$exists": True}})
+    coll.get_only()                                    # exactly one document
     coll.update_one({"_id": x}, {"$set": {...}})
+    get_project_config(db)                             # read-through migration
 
 Not supported: delete, $gt/$lt/$in/$ne, nested paths, projections, sort.
 Add them if something new needs them.
@@ -59,6 +60,31 @@ class JSONStore:
 
     def close(self):
         self._db.close()
+
+
+def get_project_config(db):
+    """
+    Return the project-level stimulus configuration for a subject DB.
+
+    Newer databases store it on the single metadata document.
+    Older databases stored it on the frozen auto-analysis metadata doc;
+    when found there, write it forward so future reads use the new home.
+    """
+    meta = db.metadata.get_only()
+    if "project_configuration" in meta:
+        return meta["project_configuration"]
+
+    legacy = db.analysis_metadata.find_one({"configuration": {"$exists": True}})
+    if legacy is None:
+        raise ValueError(
+            "No project configuration found in db.metadata or legacy "
+            "analysis_metadata."
+        )
+
+    cfg = legacy["configuration"]
+    db.metadata.update_one({"_id": meta["_id"]},
+                           {"$set": {"project_configuration": cfg}})
+    return cfg
 
 
 class Collection:
