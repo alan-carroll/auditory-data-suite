@@ -14,6 +14,7 @@ Supported:
     coll.find({"analysis_id": x, "number": 3})         # equality filter(s), AND-ed
     coll.find_one({...})                               # first match or None
     coll.get_only()                                    # exactly one document
+    coll.clone_by("analysis_id", old_id, new_id)       # duplicate matching docs
     coll.update_one({"_id": x}, {"$set": {...}})
     get_project_config(db)                             # read-through migration
 
@@ -106,6 +107,19 @@ class Collection:
         if len(docs) != 1:
             raise ValueError(f"Expected exactly 1 document, found {len(docs)}")
         return docs[0]
+
+    def clone_by(self, field, old_value, new_value):
+        """
+        Duplicate every document where `field == old_value`, rewriting that
+        field to `new_value` and dropping `_id` so fresh IDs are assigned.
+        """
+        clones = []
+        for doc in self.find({field: old_value}):
+            clone = dict(doc)
+            clone[field] = new_value
+            clone.pop("_id", None)
+            clones.append(clone)
+        return self.insert_many(clones)
     
     def insert_one(self, document):
         if not isinstance(document, dict):
