@@ -222,15 +222,18 @@ def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True):
                               lat_start=lat_start, lat_end=150, l_bound=4,
                               u_bound=max_m, return_sdf=return_sdf)
     sdf = bb_dict["sdf"]
-    lats = bb_dict["lats"][lat_start:]
-    max_prob = np.amax(lats)
+    lats = np.nan_to_num(bb_dict["lats"][lat_start:], nan=0.0, posinf=1.0,
+                         neginf=0.0)
+    max_prob = float(np.amax(lats))
     onset = np.where(0.15 <= lats)[0]
     if onset.any():
         onset = int(onset[0] + lat_start)
     else:
         onset = int(np.argmax(lats) + lat_start)
 
-    if (bb_dict["total_prob"] < 0.2) or (max_prob < 0.1):
+    total_prob = float(np.nan_to_num(bb_dict["total_prob"], nan=0.0,
+                                     posinf=1.0, neginf=0.0))
+    if (total_prob < 0.2) or (max_prob < 0.1):
         onset, peak, offset = 50, None, 300
     else:
         d_sdf = np.diff(sdf)
@@ -265,7 +268,7 @@ def get_densetc_bb_lats(psth, n_sweeps, spont, return_sdf=True):
         "sdf": sdf,
         "lats": lats,
         "max_prob": max_prob,
-        "total_prob": bb_dict["total_prob"],
+        "total_prob": total_prob,
         "signal": bb_dict["signal"],
         "m_priors": bb_dict["m_priors"],
         "sigma": bb_dict["sigma"],

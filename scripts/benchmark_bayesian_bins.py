@@ -90,16 +90,19 @@ def analyze_site(module, site, n_sweeps, return_sdf):
 def get_densetc_lats_from_result(site, result):
     psth = np.array(site["psth"], dtype=np.int64)
     sdf = result["sdf"]
-    lats = result["lats"][1:]
-    max_prob = np.amax(lats)
+    lats = np.nan_to_num(result["lats"][1:], nan=0.0, posinf=1.0,
+                         neginf=0.0)
+    max_prob = float(np.amax(lats))
     onset = np.where(0.15 <= lats)[0]
     if onset.any():
         onset = int(onset[0] + 1)
     else:
         onset = int(np.argmax(lats) + 1)
 
-    if (result["total_prob"] < 0.2) or (max_prob < 0.1):
-        return onset, None, 300
+    total_prob = float(np.nan_to_num(result["total_prob"], nan=0.0,
+                                     posinf=1.0, neginf=0.0))
+    if (total_prob < 0.2) or (max_prob < 0.1):
+        return 50, None, 300
 
     d_sdf = np.diff(sdf)
     d_norm_sdf = 2.0 * (d_sdf - np.min(d_sdf)) / np.ptp(d_sdf) - 1
