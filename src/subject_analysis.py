@@ -312,6 +312,28 @@ def _gather_brainware_files(dir_path, enabled_stims, use_f32, nums, ic_pens,
     return bw_files
 
 
+@ray.remote
+def _analyze_stimulus_file(stim, idx, file, total, use_f32, ic_pens,
+                           worker_kwargs):
+    try:
+        return stim.analyze_file(
+            idx=idx,
+            file=file,
+            total=total,
+            use_f32=use_f32,
+            ic_pens=ic_pens,
+            **worker_kwargs,
+        )
+    except Exception as e:
+        file_name = getattr(file, "_filename", None)
+        if file_name is None:
+            file_name = getattr(file, "filename", "<unknown file>")
+        raise RuntimeError(
+            f"{stim.key} analysis failed for file {file_name!r} at worker "
+            f"index {idx} of {total}"
+        ) from e
+
+
 def _prompt_ic_map_options(config_dict):
     ic_bool = False
     ic_only = False
@@ -590,6 +612,15 @@ def _analysis_numbers(run_ctx, map_data):
 
 
 def run_brainware_analysis(run_ctx, map_data=None):
+    config_dict = run_ctx.config_dict
+    use_f32 = run_ctx.use_f32
+    analysis_id = run_ctx.analysis_id
+    final_file_df = run_ctx.final_file_df
+    return_sdf = run_ctx.return_sdf
+    ic_bool = run_ctx.ic_bool
+    ic_points_df = run_ctx.ic_points_df
+    db = run_ctx.db
+
     cli.info(
         "Select dir containing all Brainware files for subject"
         "(subfolders will be skipped):"
@@ -600,11 +631,11 @@ def run_brainware_analysis(run_ctx, map_data=None):
         return False
 
     nums = _analysis_numbers(run_ctx, map_data)
-    ic_pens = run_ctx.ic_points_df.number.values if run_ctx.ic_bool else []
-    enabled_stims = enabled_stim_types(run_ctx.config_dict)
+    ic_pens = ic_points_df.number.values if ic_bool else []
+    enabled_stims = enabled_stim_types(config_dict)
     bw_files = _gather_brainware_files(dir_path, enabled_stims,
-                                       run_ctx.use_f32, nums, ic_pens,
-                                       run_ctx.config_dict)
+                                       use_f32, nums, ic_pens,
+                                       config_dict)
 
     for stim in enabled_stims:
         files = bw_files.get(stim.key)
@@ -613,27 +644,19 @@ def run_brainware_analysis(run_ctx, map_data=None):
 
         total = len(files)
         worker_kwargs = stim.worker_kwargs(
-            run_ctx.config_dict,
-            analysis_id=run_ctx.analysis_id,
-            final_file_df=run_ctx.final_file_df,
-            return_sdf=run_ctx.return_sdf,
+            config_dict,
+            analysis_id=analysis_id,
+            final_file_df=final_file_df,
+            return_sdf=return_sdf,
         )
-
-        @ray.remote
-        def worker(idx, file):
-            return stim.analyze_file(
-                idx=idx,
-                file=file,
-                total=total,
-                use_f32=run_ctx.use_f32,
-                ic_pens=ic_pens,
-                **worker_kwargs,
+        results = ray.get([
+            _analyze_stimulus_file.remote(
+                stim, i, f, total, use_f32, ic_pens, worker_kwargs
             )
-
-        results = ray.get([worker.remote(i, f) for i, f in enumerate(files)])
+            for i, f in enumerate(files)
+        ])
         cli.success(f"\nSaving {stim.label} data...")
-        _route_and_insert(results, stim, run_ctx.db, run_ctx.ic_bool,
-                          ic_pens, run_ctx.ic_points_df)
+        _route_and_insert(results, stim, db, ic_bool, ic_pens, ic_points_df)
 
     return True
 
