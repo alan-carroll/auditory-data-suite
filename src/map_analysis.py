@@ -165,8 +165,10 @@ def _action_analyze(state):
     if not _require_config(state):
         return
     try:
-        subject_analysis.run_program(state.config_dict, state.version)
-        cli.banner("\nIt's over! :)\n\n")
+        completed = subject_analysis.run_program(state.config_dict,
+                                                 state.version)
+        if completed:
+            cli.banner("\nIt's over! :)\n\n")
     except Exception as e:
         cli.fail(e, f"Analysis crashed: {e}\n"
                     "Traceback in check_after_crash.log.")
