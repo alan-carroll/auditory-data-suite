@@ -110,6 +110,28 @@ def nb_precompute_interval_evidences(event_counts, num_sweeps, max_t, sigma,
     return interval_evidences
 
 
+@nb.njit(nogil=True, parallel=True)
+def nb_precompute_signal_logs(event_counts, num_sweeps, max_t, sigma, gamma,
+                              signal):
+    below_logs = np.zeros((max_t, max_t))
+    above_logs = np.zeros((max_t, max_t))
+
+    for start_idx in nb.prange(max_t):
+        if start_idx == 0:
+            prev_events = 0
+        else:
+            prev_events = event_counts[start_idx - 1]
+
+        for end_idx in range(start_idx, max_t):
+            events = event_counts[end_idx] - prev_events
+            gaps = num_sweeps*(end_idx - start_idx + 1) - events
+            below_prob = nb_betainc(events + sigma, gaps + gamma, signal)
+            below_logs[start_idx, end_idx] = np.log(below_prob)
+            above_logs[start_idx, end_idx] = np.log(1 - below_prob)
+
+    return below_logs, above_logs
+
+
 # Big E
 @nb.jit
 def nb_big_e_k_func(sub_e, m, interval_evidences, length, max_t):
@@ -182,9 +204,9 @@ def nb_calc_big_e(m_priors, interval_evidences, max_m, max_t):
 # Calculate m_latsum for signal probability estimation
 # (use with function optimizer like scipy minimize_scalar)
 @nb.njit(nogil=True, fastmath=True)
-def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
-                     num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
-                     gamma, l_bound, u_bound, signal):
+def nb_calc_m_latsum(big_e, m_priors, interval_evidences, signal_below_logs,
+                     signal_above_logs, lat_start, lat_end, max_m, max_t,
+                     l_bound, u_bound):
 
     m_latsum = np.zeros(max_m)
     lat_sub_e = np.zeros(max_t)
@@ -197,10 +219,8 @@ def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
     passed_l_bound = l_bound
     
     for k_end in nb.prange(max_t):
-        events = event_counts[k_end]
-        gaps = num_sweeps*(k_end+1) - events
-        lat_sub_e[k_end] = interval_evidences[0, k_end] + \
-            np.log(nb_betainc((events + sigma), (gaps + gamma), signal))
+        lat_sub_e[k_end] = (
+            interval_evidences[0, k_end] + signal_below_logs[0, k_end])
             
     lat_sub_e_initial = lat_sub_e.copy()
     
@@ -221,9 +241,6 @@ def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
                     continue
                 
                 for r_idx in np.arange(sub_m, k_idx):
-                    events = event_counts[k_idx] - event_counts[r_idx]
-                    gaps = num_sweeps*(k_idx - r_idx) - events
-    
                     if sub_m > m:
                         if lat_sub_e[r_idx] == 0:
                             continue
@@ -238,16 +255,14 @@ def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
                             running_val[r_idx] = (
                                 lat_sub_e[r_idx] +
                                 interval_evidences[r_idx + 1, k_idx] +
-                                np.log(nb_betainc(
-                                    events + sigma, gaps + gamma, signal)))
+                                signal_below_logs[r_idx + 1, k_idx])
                     elif (r_idx < lat_start) or (r_idx > lat_end):
                         continue
                     else:
                         running_val[r_idx] = (
                             lat_sub_e[r_idx] +
                             interval_evidences[r_idx + 1, k_idx] +
-                            np.log(1 - nb_betainc(
-                                events + sigma, gaps + gamma, signal)))
+                            signal_above_logs[r_idx + 1, k_idx])
                             
                 # running_val window to sum over changes depending on 
                 # sub_m, k, lat_start, and lat_end (Must window correctly, 
@@ -298,18 +313,16 @@ def nb_calc_m_latsum(big_e, m_priors, interval_evidences, event_counts,
 
 # Latency
 @nb.njit(nogil=True, fastmath=True)
-def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
-                    num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
-                    gamma, l_bound, u_bound, signal, lat_idx):
+def nb_calc_latency(big_e, m_priors, interval_evidences, signal_below_logs,
+                    signal_above_logs, lat_start, lat_end, max_m, max_t,
+                    l_bound, u_bound, lat_idx):
     
     lat_sub_e = np.zeros(max_t)
     running_val = np.zeros(max_t)
     
     for k_end in nb.prange(lat_idx):
-        events = event_counts[k_end]
-        gaps = num_sweeps*(k_end+1) - events
-        lat_sub_e[k_end] = interval_evidences[0, k_end] + \
-            np.log(nb_betainc((events + sigma), (gaps + gamma), signal))
+        lat_sub_e[k_end] = (
+            interval_evidences[0, k_end] + signal_below_logs[0, k_end])
     
     lat_big_e = m_priors.copy()
     lat_big_e[0] = lat_sub_e[max_t-1] + m_priors[0]
@@ -328,9 +341,6 @@ def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
                 continue
             
             for r_idx in np.arange(m, k_idx):
-                events = event_counts[k_idx] - event_counts[r_idx]
-                gaps = num_sweeps*(k_idx - r_idx) - events
-                
                 if r_idx >= lat_idx:
                     if lat_sub_e[r_idx] == 0:
                         continue
@@ -345,8 +355,7 @@ def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
                         running_val[r_idx] = (
                             lat_sub_e[r_idx] +
                             interval_evidences[r_idx + 1, k_idx] +
-                            np.log(nb_betainc(
-                                events + sigma, gaps + gamma, signal)))
+                            signal_below_logs[r_idx + 1, k_idx])
                 elif ((r_idx+1)==lat_idx):
                     if lat_sub_e[r_idx] == 0:
                         continue
@@ -354,8 +363,7 @@ def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
                         running_val[r_idx] = (
                             lat_sub_e[r_idx] +
                             interval_evidences[r_idx + 1, k_idx] +
-                            np.log(1 - nb_betainc(
-                                events + sigma, gaps + gamma, signal)))
+                            signal_above_logs[r_idx + 1, k_idx])
                 else:
                     continue
             
@@ -388,15 +396,15 @@ def nb_calc_latency(big_e, m_priors, interval_evidences, event_counts,
 
 
 @nb.njit(nogil=True, parallel=True)
-def nb_para_calc_lats(big_e, m_priors, interval_evidences, event_counts,
-                      num_sweeps, lat_start, lat_end, max_m, max_t, sigma,
-                      gamma, l_bound, u_bound, signal):
+def nb_para_calc_lats(big_e, m_priors, interval_evidences, signal_below_logs,
+                      signal_above_logs, lat_start, lat_end, max_m, max_t,
+                      l_bound, u_bound):
     results = np.zeros(max_t)
     for lat_idx in nb.prange(lat_start, lat_end):
         results[lat_idx] = nb_calc_latency(
-            big_e, m_priors, interval_evidences, event_counts, num_sweeps,
-            lat_start, lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound,
-            signal, lat_idx)
+            big_e, m_priors, interval_evidences, signal_below_logs,
+            signal_above_logs, lat_start, lat_end, max_m, max_t, l_bound,
+            u_bound, lat_idx)
         
     return results
 
@@ -474,10 +482,9 @@ def calc_sdf_sub_e(sdf_idx, interval_evidences, event_counts, num_sweeps,
     sdf_sub_e = np.zeros(max_t)
     
     for k_end in nb.prange(max_t):
-        events = event_counts[k_end]
-        gaps = num_sweeps*(k_end+1) - events
-        
         if sdf_idx <= k_end:
+            events = event_counts[k_end]
+            gaps = num_sweeps*(k_end+1) - events
             sdf_sub_e[k_end] = interval_evidences[0, k_end] + \
                 np.log(sigma + events) - np.log(sigma + gamma + events + gaps)
         else:
@@ -624,16 +631,28 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
             min_sig_bound = 0.100
             max_sig_bound = 0.150
         
-    event_counts = psth.cumsum()    
+    event_counts = psth.cumsum()
+    sdf_interval_evidences = None
+    if return_sdf and len(psth) >= max_t:
+        sdf_interval_evidences = nb_precompute_interval_evidences(
+            event_counts, n_sweeps, len(psth), sigma, gamma)
+        interval_evidences = sdf_interval_evidences
+    else:
+        interval_evidences = nb_precompute_interval_evidences(
+            event_counts, n_sweeps, max_t, sigma, gamma)
+
     m_priors = nb_calc_m_priors(max_m, max_t, sigma, gamma)
-    interval_evidences = nb_precompute_interval_evidences(
-        event_counts, n_sweeps, max_t, sigma, gamma)
     big_e = nb_calc_big_e(m_priors, interval_evidences, max_m, max_t)
 
     # func returns 1-p, since scipy uses a minimizer for optimization
-    func = lambda sig: nb_calc_m_latsum(
-        big_e, m_priors, interval_evidences, event_counts, n_sweeps, lat_start,
-        lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, sig)
+    def func(sig):
+        signal_below_logs, signal_above_logs = nb_precompute_signal_logs(
+            event_counts, n_sweeps, max_t, sigma, gamma, sig)
+        return nb_calc_m_latsum(
+            big_e, m_priors, interval_evidences, signal_below_logs,
+            signal_above_logs, lat_start, lat_end, max_m, max_t, l_bound,
+            u_bound)
+
     result = minimize_scalar(func, bounds=(min_sig_bound, max_sig_bound),
                              method="bounded", options={"maxiter": 30})
     # Probability that neural response exists at given signal level
@@ -641,9 +660,11 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
     total_prob = 1 - result.fun
     
     # Array of len max_t with probs of latency existing for each time idx
+    signal_below_logs, signal_above_logs = nb_precompute_signal_logs(
+        event_counts, n_sweeps, max_t, sigma, gamma, signal)
     lats = nb_para_calc_lats(
-        big_e, m_priors, interval_evidences, event_counts, n_sweeps, lat_start,
-        lat_end, max_m, max_t, sigma, gamma, l_bound, u_bound, signal)
+        big_e, m_priors, interval_evidences, signal_below_logs,
+        signal_above_logs, lat_start, lat_end, max_m, max_t, l_bound, u_bound)
     lats[np.isnan(lats)] = 0
     # Random cases may have rounding errors but should be treated as 1 or 0
     lats[1 < lats] = 1
@@ -654,8 +675,11 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
         # Must re-calculate some variables to use entire PSTH sweep length
         max_t = len(psth)
         m_priors = nb_calc_m_priors(max_m, max_t, sigma, gamma)
-        interval_evidences = nb_precompute_interval_evidences(
-            event_counts, n_sweeps, max_t, sigma, gamma)
+        if sdf_interval_evidences is None:
+            interval_evidences = nb_precompute_interval_evidences(
+                event_counts, n_sweeps, max_t, sigma, gamma)
+        else:
+            interval_evidences = sdf_interval_evidences
         big_e = nb_calc_big_e(m_priors, interval_evidences, max_m, max_t)
         sdf = get_sdf(big_e, m_priors, interval_evidences, event_counts,
                       n_sweeps, max_m, max_t, sigma, gamma, l_bound, u_bound)
