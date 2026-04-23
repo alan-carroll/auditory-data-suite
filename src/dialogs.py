@@ -13,6 +13,7 @@ even if the dialog raises.
 """
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox, TclError
@@ -23,6 +24,8 @@ __all__ = [
 ]
 
 # -- internals -------------------------------------------------------------
+
+_LAST_DIALOG_DIR = Path.cwd()
 
 @contextmanager
 def _hidden_root():
@@ -37,6 +40,22 @@ def _hidden_root():
         except Exception:
             pass
 
+
+def _dialog_kwargs(kwargs):
+    dialog_kwargs = dict(kwargs)
+    dialog_kwargs.setdefault("initialdir", str(_LAST_DIALOG_DIR))
+    return dialog_kwargs
+
+
+def _remember_dialog_path(path, *, is_folder=False):
+    global _LAST_DIALOG_DIR
+
+    if not path:
+        return
+
+    picked = Path(path)
+    _LAST_DIALOG_DIR = picked if is_folder else picked.parent
+
 # -- file / folder primitives ---------------------------------------------
 
 def get_folder(**kwargs):
@@ -46,18 +65,23 @@ def get_folder(**kwargs):
     paths by string concat; TODO pathlib follow-up.)
     """
     with _hidden_root():
-        folder = filedialog.askdirectory(**kwargs)
+        folder = filedialog.askdirectory(**_dialog_kwargs(kwargs))
+    _remember_dialog_path(folder, is_folder=True)
     return (folder + "/") if folder else ""
 
 def get_file(**kwargs):
     """File-open picker. Returns path string, or empty string on cancel."""
     with _hidden_root():
-        return filedialog.askopenfilename(**kwargs)
+        path = filedialog.askopenfilename(**_dialog_kwargs(kwargs))
+    _remember_dialog_path(path)
+    return path
 
 def save_file(**kwargs):
     """File-save picker. Returns path string, or empty string on cancel."""
     with _hidden_root():
-        return filedialog.asksaveasfilename(**kwargs)
+        path = filedialog.asksaveasfilename(**_dialog_kwargs(kwargs))
+    _remember_dialog_path(path)
+    return path
 
 # -- simple prompt primitives ---------------------------------------------
 
