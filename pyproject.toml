@@ -30,6 +30,11 @@ dependencies = [
   "tinydb",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest",
+]
+
 [project.scripts]
 map-analysis = "map_analysis:main"
 

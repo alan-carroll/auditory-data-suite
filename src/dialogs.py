@@ -32,18 +32,31 @@ def _hidden_root():
     """A withdrawn Tk root, destroyed on exit. Backbone of every primitive."""
     root = tk.Tk()
     root.withdraw()
+    _drain_tk(root)
     try:
         yield root
     finally:
+        _drain_tk(root)
         try:
             root.destroy()
         except Exception:
             pass
+        _drain_tk(root)
 
 
-def _dialog_kwargs(kwargs):
+def _drain_tk(root):
+    try:
+        root.update_idletasks()
+        root.update()
+    except TclError:
+        pass
+
+
+def _dialog_kwargs(kwargs, parent=None):
     dialog_kwargs = dict(kwargs)
     dialog_kwargs.setdefault("initialdir", str(_LAST_DIALOG_DIR))
+    if parent is not None:
+        dialog_kwargs.setdefault("parent", parent)
     return dialog_kwargs
 
 
@@ -56,6 +69,23 @@ def _remember_dialog_path(path, *, is_folder=False):
     picked = Path(path)
     _LAST_DIALOG_DIR = picked if is_folder else picked.parent
 
+
+def _run_file_dialog(dialog_func, kwargs, *, is_folder=False):
+    parent = kwargs.get("parent")
+    if parent is None:
+        with _hidden_root() as root:
+            path = dialog_func(**_dialog_kwargs(kwargs))
+            _drain_tk(root)
+    else:
+        _drain_tk(parent)
+        try:
+            path = dialog_func(**_dialog_kwargs(kwargs, parent))
+        finally:
+            _drain_tk(parent)
+
+    _remember_dialog_path(path, is_folder=is_folder)
+    return path
+
 # -- file / folder primitives ---------------------------------------------
 
 def get_folder(**kwargs):
@@ -64,40 +94,32 @@ def get_folder(**kwargs):
     string on cancel. (Trailing slash preserved for callers that build
     paths by string concat; TODO pathlib follow-up.)
     """
-    with _hidden_root():
-        folder = filedialog.askdirectory(**_dialog_kwargs(kwargs))
-    _remember_dialog_path(folder, is_folder=True)
+    folder = _run_file_dialog(filedialog.askdirectory, kwargs, is_folder=True)
     return (folder + "/") if folder else ""
 
 def get_file(**kwargs):
     """File-open picker. Returns path string, or empty string on cancel."""
-    with _hidden_root():
-        path = filedialog.askopenfilename(**_dialog_kwargs(kwargs))
-    _remember_dialog_path(path)
-    return path
+    return _run_file_dialog(filedialog.askopenfilename, kwargs)
 
 def save_file(**kwargs):
     """File-save picker. Returns path string, or empty string on cancel."""
-    with _hidden_root():
-        path = filedialog.asksaveasfilename(**_dialog_kwargs(kwargs))
-    _remember_dialog_path(path)
-    return path
+    return _run_file_dialog(filedialog.asksaveasfilename, kwargs)
 
 # -- simple prompt primitives ---------------------------------------------
 
 def ask_string(title, prompt):
     """Single-line text prompt. Returns the string, or None on cancel."""
-    with _hidden_root():
-        return simpledialog.askstring(title, prompt)
+    with _hidden_root() as root:
+        return simpledialog.askstring(title, prompt, parent=root)
 
 def confirm(title, message):
     """Yes/No box. Returns bool."""
-    with _hidden_root():
-        return messagebox.askyesno(title, message)
+    with _hidden_root() as root:
+        return messagebox.askyesno(title, message, parent=root)
 
 def show_error(title, message):
-    with _hidden_root():
-        messagebox.showerror(title, message)
+    with _hidden_root() as root:
+        messagebox.showerror(title, message, parent=root)
 
 # -- subprocess focus pump -------------------------------------------------
 

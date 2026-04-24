@@ -63,13 +63,14 @@ class DigitOCR:
         return instance
 
     @classmethod
-    def bootstrap(cls, number_crops, required_conf=0.85):
+    def bootstrap(cls, number_crops, required_conf=0.995):
         """
         If you don't have a font file, create templates from input images.
         
-        Attempts to match against any existing templates first.
-        Any digit that doesn't match with at least required_conf receives
-        a user-input label and becomes that digit's template.
+        Attempts to match exact duplicates against existing templates first.
+        Any digit that doesn't match with at least required_conf receives a
+        user-input label and becomes that digit's template. Bootstrap uses a
+        high default threshold because false matches skip template creation.
         """
         import matplotlib.pyplot as plt
 
@@ -84,45 +85,125 @@ class DigitOCR:
         print(f"Extracted {len(all_digits)} individual digit images.")
         print("Label each unique digit:  0-9 = digit,  s = skip\n")
 
-        for digit_binary in all_digits:
-            normed = cls._normalize(digit_binary)
+        fig = None
+        ax = None
+        try:
+            for digit_binary in all_digits:
+                normed = cls._normalize(digit_binary)
 
-            if any(t is not None for t in instance._working_templates.values()):
-                _, best_score = instance._match_single(normed)
-                if best_score >= required_conf:
-                    match_count += 1
+                if any(t is not None for t in instance._working_templates.values()):
+                    _, best_score = instance._match_single(normed)
+                    if best_score >= required_conf:
+                        match_count += 1
+                        continue
+
+                display = cv2.resize(
+                    255 - digit_binary, (0, 0),
+                    fx=4, fy=4, interpolation=cv2.INTER_NEAREST,
+                )
+                if fig is None:
+                    fig, ax = plt.subplots(figsize=(2.5, 3))
+                    cls._configure_prompt_window(fig)
+                    cls._hide_prompt_toolbar(fig)
+                cls._draw_prompt_digit(fig, ax, display)
+
+                while not ((resp := input("  Label (0-9 / s): ")) == "s"
+                           or (resp.isdigit() and 0 <= int(resp) <= 9)):
                     continue
 
-            display = cv2.resize(
-                255 - digit_binary, (0, 0),
-                fx=4, fy=4, interpolation=cv2.INTER_NEAREST,
-            )
-            fig, ax = plt.subplots(figsize=(2.5, 3))
-            ax.imshow(display, cmap="gray", vmin=0, vmax=255)
-            ax.set_title("What digit?")
-            ax.axis("off")
-            fig.tight_layout()
-            plt.show(block=False)
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-
-            while not ((resp := input("  Label (0-9 / s): ")) == "s" 
-                       or (resp.isdigit() and 0 <= int(resp) <= 9)):
-                continue
-            plt.close(fig)
-
-            if resp == "s":
-                continue
-            if resp.isdigit() and 0 <= int(resp) <= 9:
-                instance._working_templates[int(resp)] = normed
-                labeled_count += 1
-                instance._compile_templates()
+                if resp == "s":
+                    continue
+                if resp.isdigit() and 0 <= int(resp) <= 9:
+                    instance._working_templates[int(resp)] = normed
+                    labeled_count += 1
+                    instance._compile_templates()
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
         instance.validate()
         instance._compile_templates()
         print(f"\nDone: {labeled_count} labeled, {match_count} template-matched.")
         instance.print_summary()
         return instance
+
+    @staticmethod
+    def _draw_prompt_digit(fig, ax, display):
+        import matplotlib.pyplot as plt
+
+        ax.clear()
+        image = ax.imshow(display, cmap="gray", vmin=0, vmax=255)
+        image.get_cursor_data = lambda _event: None
+        ax.format_coord = lambda _x, _y: ""
+        ax.set_title("What digit?")
+        ax.axis("off")
+        fig.tight_layout()
+        DigitOCR._disable_prompt_status_text(fig)
+        plt.show(block=False)
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+    @staticmethod
+    def _hide_prompt_toolbar(fig):
+        manager = getattr(fig.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        if toolbar is None:
+            return
+
+        for method_name in ("pack_forget", "hide"):
+            method = getattr(toolbar, method_name, None)
+            if method is None:
+                continue
+            try:
+                method()
+                return
+            except Exception:
+                pass
+
+        if hasattr(toolbar, "setVisible"):
+            try:
+                toolbar.setVisible(False)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _configure_prompt_window(fig):
+        manager = getattr(fig.canvas, "manager", None)
+        if manager is not None and hasattr(manager, "set_window_title"):
+            manager.set_window_title("Digit OCR Bootstrap")
+
+        window = getattr(manager, "window", None)
+        if window is None:
+            return
+
+        # TkAgg. Reusing the figure avoids repeated focus stealing; these
+        # window hints keep it visible and pinned to a stable screen location.
+        if hasattr(window, "wm_geometry"):
+            window.wm_geometry("+80+80")
+        elif hasattr(window, "setGeometry"):
+            window.setGeometry(80, 80, 260, 320)
+
+        for attr_name in ("attributes", "wm_attributes"):
+            attr = getattr(window, attr_name, None)
+            if attr is None:
+                continue
+            try:
+                attr("-topmost", True)
+                break
+            except Exception:
+                pass
+
+    @staticmethod
+    def _disable_prompt_status_text(fig):
+        manager = getattr(fig.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        if toolbar is None or not hasattr(toolbar, "set_message"):
+            return
+        try:
+            toolbar.set_message("")
+            toolbar.set_message = lambda _message: None
+        except Exception:
+            pass
 
     # ────────────────────────────────────────────────────────────
     #  Persistence

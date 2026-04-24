@@ -16,12 +16,14 @@ from __future__ import annotations
 import csv
 from os import PathLike
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 from typing import Iterable, Optional
 
 import numpy as np
 from scipy.spatial import QhullError, Voronoi
 from shapely.geometry import Polygon, box
+
+from dialogs import get_file, save_file
 
 
 _BACKGROUND = "#d8d8d8"
@@ -575,7 +577,8 @@ class Picker:
             return
         if not messagebox.askyesno(
                 "Clear buffer points?",
-                "Remove all buffer points from this picker?"):
+                "Remove all buffer points from this picker?",
+                parent=self.root):
             return
         self._push_history()
         self.buffer_points = np.empty((0, 2), dtype=np.float64)
@@ -604,9 +607,10 @@ class Picker:
         return "break"
 
     def load_points_dialog(self, _event=None):
-        path = filedialog.askopenfilename(
+        path = get_file(
             title="Load buffer points",
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            parent=self.root,
         )
         if not path:
             return "break"
@@ -614,7 +618,7 @@ class Picker:
         try:
             loaded_points = load_buffer_points_csv(path)
         except (OSError, ValueError) as exc:
-            messagebox.showerror("Could not load points", str(exc))
+            messagebox.showerror("Could not load points", str(exc), parent=self.root)
             return "break"
 
         replace = True
@@ -622,6 +626,7 @@ class Picker:
             response = messagebox.askyesnocancel(
                 "Load buffer points",
                 "Replace current buffer points? Choose No to append them.",
+                parent=self.root,
             )
             if response is None:
                 return "break"
@@ -641,10 +646,11 @@ class Picker:
         return "break"
 
     def export_points_dialog(self, _event=None) -> bool | str:
-        path = filedialog.asksaveasfilename(
+        path = save_file(
             title="Export buffer points",
             defaultextension=".csv",
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            parent=self.root,
         )
         if not path:
             return "break"
@@ -652,12 +658,13 @@ class Picker:
         try:
             save_buffer_points_csv(self.buffer_points, path)
         except OSError as exc:
-            messagebox.showerror("Could not export points", str(exc))
+            messagebox.showerror("Could not export points", str(exc), parent=self.root)
             return "break"
 
         messagebox.showinfo(
             "Export complete",
             f"Saved {len(self.buffer_points)} points.",
+            parent=self.root,
         )
         return True
 
