@@ -70,10 +70,10 @@ At the CLI, choose `o`.
 
 Available actions:
 
-- `b` bootstraps a new OCR template set from a numbers image plus matching mask image (useful if using a font unavailable as a standalone font file for some reason).
+- `b` bootstraps a new OCR template set from a numbers image plus matching mask image (useful if using a font unavailable as a standalone font file for some reason). Bootstrap output can go either to the default path `resources/digit_templates.npz` or to another `.npz` file of your choice.
 - `p` previews an OCR source before analysis (saved `.npz` template, or `.otf`/`.ttf` font file).
 
-Bootstrap output can go either to the default path `resources/digit_templates.npz` or to another `.npz` file of your choice.
+![OCR preview](resources/img/ocr_preview.png)
 
 ### New project configuration
 
@@ -122,15 +122,15 @@ For the included demo, use:
 - `demo/img/demo_num.png`
 - `demo/data/`
 
-### Voronoi tessellation and boundary editing
+### Voronoi tessellation and boundary editing GUI
 
-In auditory cortical maps, each point on the cortical surface is assumed to have the characteristics of the closest sampled penetration. A voronoi tessellation is generated from the map electrode x/y data. To prevent outer edges extending to infinity, an initial set of border points is automatically generated around the perimeter of the map (and their corresponding polygons ignored):
+In auditory cortical maps, each point on the cortical surface is assumed to have the characteristics of the closest sampled penetration. A voronoi tessellation is generated from the map electrode x/y data. To prevent outer edges extending to infinity, an initial set of border points is automatically generated around the perimeter of the map (and their corresponding polygons ignored:
 
 ![Initial set of automatic border points around voronoi tessellation](resources/img/demo_prevor.png)
 
 In most real datasets you will still want to add or trim a few border points manually to keep the outer polygons reasonably shaped.
 
-**Controls:**
+**Voronoi Picker GUI Controls:**
 - Interaction menu / toolbar: switch between Add, Move, Delete, and Pan modes
 - A / M / D / P: keyboard shortcuts for those interaction modes
 - Move and Delete modes: hover near a buffer point to target it with a ring
@@ -138,7 +138,9 @@ In most real datasets you will still want to add or trim a few border points man
 - Mouse wheel or View menu: zoom; Pan mode drags the view
 - Export or Accept and Export: save reusable buffer-point CSV files
 - Load: bring a saved buffer-point CSV back into the picker
-- Esc / Accept / Close window: accept border points
+- Esc / Accept / Close window: accept border points (no export)
+
+Here's the same map with a little manual refinement on the border edges:
 
 ![Voronoi tessellation after manually adding more border points](resources/img/demo_postvor.png)
 
@@ -164,7 +166,6 @@ DenseTC analysis is the main automated path. Speech and noiseburst definitions e
 ### Generate analysis from a final file
 
 At the CLI, choose `g`.
-
 This is the lab-specific path for generating a subject analysis database from an existing final-file based `.xlsx` spreadsheet.
 
 ### Final-file export
