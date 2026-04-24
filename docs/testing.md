@@ -58,3 +58,21 @@ You can also install the full version set up front:
 uv python install 3.10 3.11 3.12
 uv tool run --with 'nox[uv]' nox -s smoke
 ```
+
+## Running pytest on `./tests/`
+
+```bash
+uv tool run --with 'nox[uv]' nox -s tests
+```
+
+## Slow Bayesian Bins Regression
+
+Run this before changing Bayesian Bins, DenseTC latency defaults, or SDF offset
+logic:
+
+```bash
+uv tool run --with 'nox[uv]' nox -s bayesian-bins
+```
+
+See [Bayesian Bins Notes](bayesian_bins.md) for benchmark commands, expected
+frozen/manual demo scores, and parameter sweep examples.
