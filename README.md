@@ -92,7 +92,7 @@ At the CLI, choose `a` after loading a project configuration to run auto-analysi
 What the workflow expects:
 
 - Neural data files in `.src` or `.f32` BrainWare format.
-- Electrode coordinate data from images, a lab-style final file, or a `.csv`.
+- Electrode coordinate data from images, a lab-style final file, or a `.csv` (or a depths `.csv` if analyzing an IC map).
 - Optional OCR source selection if image-based coordinates are used.
 
 The image-based coordinate flow uses three grayscale `.png` images:
@@ -178,12 +178,9 @@ The GUI is used to manually inspect and edit DenseTC analyses, assign cortical f
 
 GUI notes:
 
-- Loading a map can take a while.
-- Saving can take a while.
 - Rendering "smooth TCs" can take a while the first time (subsequent renders use cached TC)
-- There is currently no autosave.
-- You will see `*** Ready! ***` in the terminal when plot generation finishes.
-- It may be necessary to zoom out with the mouse wheel when a map first opens.
+- Unsaved GUI edits are backed up to a sidecar `.autosave` file next to
+  the subject database and can be recovered on the next load.
 
 ## GUI overview
 
