@@ -177,6 +177,34 @@ Useful modes:
   --mode sdf
 ```
 
+## Ray + Numba Parallelism
+
+Subject analysis uses Ray for file-level parallelism and Bayesian Bins uses Numba
+for within-file parallel loops. Letting both layers use every CPU can
+oversubscribe the machine badly, especially in Ray workers.
+
+The default subject-analysis policy is:
+
+- keep SVML disabled in Ray workers unless explicitly requested
+- use 1 Numba thread per Ray task
+- reserve 1 Ray CPU per task
+- allow `ADS_RAY_NUMBA_THREADS` as a benchmarking/manual tuning override
+- allow SVML experiments in Ray workers with `ADS_RAY_ENABLE_SVML=1`
+
+Keep SVML experimental for now. Numba 0.65 notes that Intel SVML support is
+currently unavailable after the llvmlite/LLVM upgrade path, and Apple Silicon is
+not an SVML target anyway.
+
+Reusable Ray/Numba benchmark:
+
+```bash
+./src/.venv/bin/python scripts/benchmark_ray_numba.py \
+  --analysis frozen \
+  --sites 12 \
+  --repeats 2 \
+  --num-cpus 12
+```
+
 ## Parameter Sweeps
 
 The benchmark script can compare algorithm parameters against either frozen or

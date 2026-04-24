@@ -6,13 +6,21 @@ from dataclasses import dataclass
 import pandas as pd
 from skimage.measure import label, regionprops
 import datetime
+from runtime_config import (
+    configure_analysis_process_environment,
+    configure_numba_worker_threads,
+    ray_numba_threads,
+    ray_worker_env_vars,
+)
+
+configure_analysis_process_environment()
+
 from brainware import BrainwareSrcIO, BrainwareF32IO
 from db_adapter import JSONStore
 import cli_utils as cli
 import analysis_functions as afunc
 from stim_types import enabled_stim_types
 
-os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
 
 from digit_ocr import DigitOCR
@@ -314,8 +322,9 @@ def _gather_brainware_files(dir_path, enabled_stims, use_f32, nums, ic_pens,
 
 @ray.remote
 def _analyze_stimulus_file(stim, idx, file, total, use_f32, ic_pens,
-                           worker_kwargs):
+                           worker_kwargs, numba_threads):
     try:
+        configure_numba_worker_threads(numba_threads)
         return stim.analyze_file(
             idx=idx,
             file=file,
@@ -649,9 +658,19 @@ def run_brainware_analysis(run_ctx, map_data=None):
             final_file_df=final_file_df,
             return_sdf=return_sdf,
         )
+        numba_threads = ray_numba_threads()
+        cli.info(
+            f"Using Ray workers with {numba_threads} Numba thread"
+            f"{'' if numba_threads == 1 else 's'} each for {stim.label}."
+        )
+        analyze_task = _analyze_stimulus_file.options(
+            num_cpus=numba_threads,
+            runtime_env={"env_vars": ray_worker_env_vars(numba_threads)},
+        )
         results = ray.get([
-            _analyze_stimulus_file.remote(
-                stim, i, f, total, use_f32, ic_pens, worker_kwargs
+            analyze_task.remote(
+                stim, i, f, total, use_f32, ic_pens, worker_kwargs,
+                numba_threads
             )
             for i, f in enumerate(files)
         ])
