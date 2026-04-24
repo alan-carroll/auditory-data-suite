@@ -5,23 +5,41 @@ from logging_utils import configure_file_logging, install_excepthooks
 configure_file_logging("check_after_crash.log", level=logging.ERROR)
 install_excepthooks()
 
-import matplotlib
-matplotlib.use("TkAgg")
-
 import os
 import sys
 import subprocess
-import analysis_functions as afunc
-import subject_analysis
 from colorama import Fore, Style
 import json
-import pandas as pd
 from dataclasses import dataclass, field
-from db_adapter import JSONStore
 import cli_utils as cli
-from dialogs import pump_until
 
 _VERSION = "2.0"
+
+_AFUNC = None
+_SUBJECT_ANALYSIS = None
+
+
+def _use_tk_matplotlib_backend():
+    import matplotlib
+    matplotlib.use("TkAgg")
+
+
+def _analysis_functions():
+    global _AFUNC
+    if _AFUNC is None:
+        _use_tk_matplotlib_backend()
+        import analysis_functions as afunc
+        _AFUNC = afunc
+    return _AFUNC
+
+
+def _subject_analysis():
+    global _SUBJECT_ANALYSIS
+    if _SUBJECT_ANALYSIS is None:
+        _use_tk_matplotlib_backend()
+        import subject_analysis
+        _SUBJECT_ANALYSIS = subject_analysis
+    return _SUBJECT_ANALYSIS
 
 @dataclass
 class _MenuState:
@@ -39,6 +57,9 @@ def _pick_map_and_analysis():
     Returns (db_path, analysis_id, is_ic), or None if the user backs
     out at the file dialog or analysis picker.
     """
+    afunc = _analysis_functions()
+    from db_adapter import JSONStore
+
     is_ic = cli.ask_choice("Cortical [c] or IC [i] map? > ", ("c", "i")) == "i"
     db_path = afunc.get_file(title="Select database JSON file",
                              filetypes=[("JSON", ".json")])
@@ -87,6 +108,8 @@ def _launch_gui(db_path, analysis_id, is_ic):
     (necessary on macOS, harmless on Windows/Linux). Side effect is
     creation of an extra Python icon while the app is running.
     """
+    from dialogs import pump_until
+
     gui_script = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "Field_Selection_GUI.py")
@@ -101,6 +124,8 @@ def _launch_gui(db_path, analysis_id, is_ic):
 
 
 def _ocr_template_tools():
+    subject_analysis = _subject_analysis()
+
     def _bootstrap_templates():
         subject_analysis.bootstrap_digit_templates()
 
@@ -142,6 +167,7 @@ def _require_config(state):
 
 def _action_new_config(state):
     try:
+        afunc = _analysis_functions()
         cfg = afunc.create_config_file()
         if cfg:
             state.config_dict = cfg
@@ -150,6 +176,7 @@ def _action_new_config(state):
 
 
 def _action_load_config(state):
+    afunc = _analysis_functions()
     path = afunc.get_file(title="Load Configuration",
                           filetypes=[("JSON", ".json")])
     if not path:
@@ -165,6 +192,7 @@ def _action_analyze(state):
     if not _require_config(state):
         return
     try:
+        subject_analysis = _subject_analysis()
         completed = subject_analysis.run_program(state.config_dict,
                                                  state.version)
         if completed:
@@ -177,6 +205,7 @@ def _action_analyze(state):
 def _action_generate_from_final(state):
     if not _require_config(state):
         return
+    afunc = _analysis_functions()
     return_sdf = cli.ask_yes_no(
         "Do you want an SDF calculated for each tuning curve PSTH "
         "[y/n]? (slower) > "
@@ -186,6 +215,9 @@ def _action_generate_from_final(state):
     if not file:
         return
     try:
+        import pandas as pd
+        subject_analysis = _subject_analysis()
+
         # Use .xlsx final file. Uses v-plot format.
         usecols = [1,2,6,7,8,11,12,13,16,17,18,21,22,23,25,34,40,41,42,43]
         colnames = ["cf","thresh","bw10a","bw10b","bw10","bw20a","bw20b",
@@ -250,9 +282,9 @@ _ACTIONS = {
     "o": ("[o]cr template tools",                _action_ocr_tools),
     "s": ("[s]elect fields GUI",                 _action_select_fields),
     "f": ("[f]inal-file generation",
-          lambda s: afunc.create_final_file()),
+          lambda s: _analysis_functions().create_final_file()),
     "i": ("[i]c final-file generation",
-          lambda s: afunc.create_final_file(ic_bool=True)),
+          lambda s: _analysis_functions().create_final_file(ic_bool=True)),
     "x": ("e[x]it program",                      _action_exit),
 }
 
