@@ -19,18 +19,24 @@ AUTOSAVE_VERSION = 1
 
 
 class GUIAutosave:
-    def __init__(self, db_path, analysis_id):
+    def __init__(self, db_path, analysis_id, analysis_name=None):
         self.db_path = Path(db_path)
         self.analysis_id = str(analysis_id)
+        self.analysis_name = analysis_name
         self.path = self._autosave_path()
 
     def _autosave_path(self):
-        safe_id = "".join(
-            c if c.isalnum() or c in ("-", "_") else "_"
-            for c in self.analysis_id
-        )
+        short_id = sanitize_filename_part(self.analysis_id)[:5] or "id"
+        if self.analysis_name:
+            label = f"{sanitize_filename_part(self.analysis_name)}-{short_id}"
+        else:
+            label = f"analysis-{short_id}"
         return self.db_path.with_name(
-            f"{self.db_path.name}.autosave.{safe_id}.json")
+            f"{self.db_path.stem}.autosave.{label}")
+
+    def set_analysis_name(self, analysis_name):
+        self.analysis_name = analysis_name
+        self.path = self._autosave_path()
 
     def load(self):
         if not self.path.exists():
@@ -90,6 +96,12 @@ class GUIAutosave:
 
 def has_autosave_changes(payload):
     return bool(payload.get("overview") or payload.get("detail_sites"))
+
+
+def sanitize_filename_part(value):
+    text = str(value).strip()
+    safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in text)
+    return safe.strip("_") or "unknown"
 
 
 def normalize_json_value(value):

@@ -993,9 +993,6 @@ class FieldSelectionGUI(BoxLayout):
             "threshold_idx": st.thresh_idx,
             "onset_ms": st.onset,
             "offset_ms": st.offset,
-            "peak_ms": st.peak,
-            "peak_driven_rate_hz": st.peak_driven_rate,
-            "continuous_bw_idx": st.continuous_bw_idx,
             "bw_idx": {
                 lvl: st.bw_idx[lvl]
                 for lvl in cfg.bw_levels_db
@@ -1013,11 +1010,14 @@ class FieldSelectionGUI(BoxLayout):
         st.thresh_idx = state.get("threshold_idx", st.thresh_idx)
         st.onset = state.get("onset_ms", st.onset)
         st.offset = state.get("offset_ms", st.offset)
-        st.peak = state.get("peak_ms", st.peak)
-        st.peak_driven_rate = state.get(
-            "peak_driven_rate_hz", st.peak_driven_rate)
-        st.continuous_bw_idx = state.get(
-            "continuous_bw_idx", st.continuous_bw_idx)
+        raw = model.raw_psth
+        peak_hist = raw.copy()
+        peak_hist[:st.onset] = peak_hist[st.offset:] = 0
+        st.peak = int(np.argmax(peak_hist))
+        import analysis_functions as afunc
+        st.peak_driven_rate = afunc.get_peak_driven_rate(
+            raw[st.onset:st.offset], model.spont_rate, cfg.num_tones)
+        st.continuous_bw_idx = [None, None]
         bw_idx = state.get("bw_idx", {})
         st.bw_idx = {
             lvl: list(bw_idx.get(str(lvl), st.bw_idx[lvl])
@@ -1025,9 +1025,29 @@ class FieldSelectionGUI(BoxLayout):
             for lvl in cfg.bw_levels_db
         }
         st.marked = state.get("marked", st.marked)
+        if st.marked:
+            self.map_sets[MARK_FIELD].add(site_number)
+        else:
+            self.map_sets[MARK_FIELD].discard(site_number)
+        self._refresh_site_dirty_state(site_number)
+        if site_number in self.vor_lines:
+            self._paint_cell(site_number, unsaved_changes=True)
+        self._refresh_recovered_detail_overview(site_number)
         self._autosaved_detail_sites.add(site_number)
         if site_number in self.site_screens:
             self.site_screens[site_number].mark_recovered_unsaved()
+
+    def _refresh_recovered_detail_overview(self, site_number):
+        overview = self.plot_dict.get(site_number)
+        if overview is None:
+            return
+        overview.re_plot()
+        try:
+            overview.figure_canvas.draw()
+        except ValueError:
+            # Keep recovery best-effort for non-responsive plots that
+            # occasionally cannot redraw cleanly.
+            overview.mark_dirty()
 
     def _update_densetc_analysis_doc(self, site_number, update_doc):
         analysis_doc = self.densetc_analysis[site_number]
@@ -1132,8 +1152,9 @@ class FieldSelectionGUI(BoxLayout):
             "fill_rgba": fill_rgba,
         }
 
-    def _paint_cell(self, site_number, alpha=None):
-        state = self._cell_visual_state(site_number, alpha=alpha)
+    def _paint_cell(self, site_number, alpha=None, unsaved_changes=False):
+        state = self._cell_visual_state(
+            site_number, alpha=alpha, unsaved_changes=unsaved_changes)
         self.vor_lines[site_number].line.width = state["line_width"]
         self.vor_lines[site_number].color.rgb = state["line_rgb"]
         self.vor_meshes[site_number].color.rgba = state["fill_rgba"]
@@ -1184,6 +1205,10 @@ class FieldSelectionGUI(BoxLayout):
             self.map_metadata = self.map_metadata_collection.get_only()
             self.analysis_metadata_collection = \
                 self.subject_database.analysis_metadata
+            analysis_metadata = self.analysis_metadata_collection.find_one(
+                {"_id": self.analysis_id})
+            if analysis_metadata is not None:
+                self.autosave.set_analysis_name(analysis_metadata.get("name"))
 
             if is_ic:
                 # IC has no stored map dimensions or voronoi polygons,

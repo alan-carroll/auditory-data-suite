@@ -12,7 +12,10 @@ class GUIAutosaveTests(unittest.TestCase):
     def test_write_load_and_delete_sidecar_next_to_db(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "subject.json"
-            autosave = GUIAutosave(db_path, "analysis/1")
+            autosave = GUIAutosave(
+                db_path,
+                "ce866dc6d80511ee85e3fe724f4cc400",
+                analysis_name="Alan")
 
             payload = autosave.write(
                 overview={12: {"field_assignment": "A1", "marked": True}},
@@ -21,16 +24,33 @@ class GUIAutosaveTests(unittest.TestCase):
 
             self.assertEqual(
                 autosave.path,
-                Path(tmpdir) / "subject.json.autosave.analysis_1.json")
+                Path(tmpdir) / "subject.autosave.Alan-ce866")
             self.assertTrue(autosave.path.exists())
             self.assertEqual(payload["overview"]["12"]["field_assignment"], "A1")
 
             loaded = autosave.load()
-            self.assertEqual(loaded["analysis_id"], "analysis/1")
+            self.assertEqual(
+                loaded["analysis_id"],
+                "ce866dc6d80511ee85e3fe724f4cc400")
             self.assertEqual(loaded["detail_sites"]["7"]["bw_idx"]["20"], [1, 3])
 
             autosave.write(overview={}, detail_sites={})
             self.assertFalse(autosave.path.exists())
+
+    def test_analysis_name_can_be_set_after_metadata_load(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            autosave = GUIAutosave(
+                Path(tmpdir) / "subject.json",
+                "abcde12345")
+
+            self.assertEqual(
+                autosave.path, Path(tmpdir) / "subject.autosave.analysis-abcde")
+
+            autosave.set_analysis_name("Dr. Fancy Pants")
+
+            self.assertEqual(
+                autosave.path,
+                Path(tmpdir) / "subject.autosave.Dr__Fancy_Pants-abcde")
 
     def test_load_ignores_other_analysis_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:
