@@ -21,8 +21,7 @@ def _run_smoke(session: nox.Session) -> None:
 
 @nox.session(name="tests", python=SUPPORTED_PYTHONS)
 def tests(session: nox.Session) -> None:
-    session.install("-e", ".")
-    session.install("pytest")
+    session.install("-e", ".[test]")
     session.run("pytest")
 
 

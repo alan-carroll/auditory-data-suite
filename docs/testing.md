@@ -65,6 +65,13 @@ uv tool run --with 'nox[uv]' nox -s smoke
 uv tool run --with 'nox[uv]' nox -s tests
 ```
 
+For a local editable environment:
+
+```bash
+python -m pip install -e '.[test]'
+python -m pytest
+```
+
 ## Slow Bayesian Bins Regression
 
 Run this before changing Bayesian Bins, DenseTC latency defaults, or SDF offset
