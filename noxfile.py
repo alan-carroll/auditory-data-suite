@@ -26,6 +26,32 @@ def tests(session: nox.Session) -> None:
     session.run("pytest")
 
 
+@nox.session(name="bayesian-bins", python="3.12")
+def bayesian_bins(session: nox.Session) -> None:
+    session.install("-e", ".")
+    benchmark = str(Path("scripts") / "benchmark_bayesian_bins.py")
+    session.run(
+        "python", benchmark,
+        "--analysis", "frozen",
+        "--sites", "72",
+        "--check-only",
+        "--expect-latency-matches", "72",
+        "--expect-onset-matches", "72",
+        "--expect-peak-matches", "72",
+        "--expect-offset-matches", "72",
+    )
+    session.run(
+        "python", benchmark,
+        "--analysis", "manual",
+        "--sites", "72",
+        "--check-only",
+        "--expect-latency-matches", "53",
+        "--expect-onset-matches", "66",
+        "--expect-peak-matches", "72",
+        "--expect-offset-matches", "56",
+    )
+
+
 @nox.session(name="smoke", python=SUPPORTED_PYTHONS)
 def smoke(session: nox.Session) -> None:
     _run_smoke(session)

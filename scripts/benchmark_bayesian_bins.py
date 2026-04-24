@@ -55,6 +55,10 @@ def parse_args():
     parser.add_argument("--sweep-min-run-range", default="1:15")
     parser.add_argument("--sweep-adjust-range", default="-15:5")
     parser.add_argument("--sweep-top", type=int, default=15)
+    parser.add_argument("--expect-latency-matches", type=int)
+    parser.add_argument("--expect-onset-matches", type=int)
+    parser.add_argument("--expect-peak-matches", type=int)
+    parser.add_argument("--expect-offset-matches", type=int)
     return parser.parse_args()
 
 
@@ -287,6 +291,14 @@ def mean(values):
     return statistics.mean(values)
 
 
+def check_expectation(label, actual, expected):
+    if expected is None:
+        return
+    if actual != expected:
+        raise SystemExit(
+            f"{label} expected {expected}, got {actual}")
+
+
 def bench(module, sites, n_sweeps, return_sdf, repeats, args):
     analyze_site(module, sites[0], n_sweeps, return_sdf, args)
     times = []
@@ -349,6 +361,17 @@ def main():
                 f"onset:{mean(abs_errors['onset']):.2f} "
                 f"peak:{mean(abs_errors['peak']):.2f} "
                 f"offset:{mean(abs_errors['offset']):.2f}")
+            check_expectation(
+                "latency_matches", matches, args.expect_latency_matches)
+            check_expectation(
+                "onset_matches", component_matches["onset"],
+                args.expect_onset_matches)
+            check_expectation(
+                "peak_matches", component_matches["peak"],
+                args.expect_peak_matches)
+            check_expectation(
+                "offset_matches", component_matches["offset"],
+                args.expect_offset_matches)
             if args.show_mismatches:
                 for number, expected, got in mismatches[:args.show_mismatches]:
                     print(
