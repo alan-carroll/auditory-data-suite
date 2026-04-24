@@ -177,6 +177,36 @@ Useful modes:
   --mode sdf
 ```
 
+## Process + Numba Parallelism
+
+Subject analysis uses stdlib process workers for file-level parallelism and
+Bayesian Bins uses Numba for within-file parallel loops. Letting both layers use
+every CPU can oversubscribe the machine badly, so the default keeps the inner
+Numba side single-threaded and lets process-level parallelism own the outer
+loop.
+
+The default subject-analysis policy is:
+
+- keep SVML disabled in workers unless explicitly requested
+- use 1 Numba thread per worker process
+- run up to one worker process per visible CPU
+- allow `ADS_WORKER_NUMBA_THREADS` as a benchmarking/manual tuning override
+- allow `ADS_ANALYSIS_WORKERS` to override process count
+- allow SVML experiments in workers with `ADS_WORKER_ENABLE_SVML=1`
+
+Keep SVML experimental for now. Numba 0.65 notes that Intel SVML support is
+currently unavailable after the llvmlite/LLVM upgrade path, and Apple Silicon is
+not an SVML target anyway.
+
+Reusable process/Numba benchmark:
+
+```bash
+./src/.venv/bin/python scripts/benchmark_process_pool.py \
+  --analysis frozen \
+  --sites 12 \
+  --repeats 2
+```
+
 ## Parameter Sweeps
 
 The benchmark script can compare algorithm parameters against either frozen or
@@ -255,6 +285,6 @@ each site, and each objective evaluation recomputes Bayesian evidence.
 ## Future Work
 
 - Compare fitted-prior analyses against frozen/manual demo targets.
-- Revisit Ray plus Numba thread settings so outer process parallelism and inner
-  Numba parallelism do not oversubscribe CPUs.
+- Benchmark stdlib process workers on Windows and adjust
+  `ADS_WORKER_NUMBA_THREADS` only if a target machine clearly benefits.
 - Re-evaluate SVML as an opt-in acceleration path on supported platforms only.
