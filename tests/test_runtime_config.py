@@ -11,15 +11,27 @@ import runtime_config
 
 
 class RuntimeConfigTests(unittest.TestCase):
-    def test_ray_numba_threads_defaults_to_one(self):
+    def test_worker_numba_threads_defaults_to_one(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(runtime_config.ray_numba_threads(cpu_count=12), 1)
+            self.assertEqual(runtime_config.worker_numba_threads(cpu_count=12),
+                             1)
 
-    def test_ray_numba_thread_override_is_clamped_to_cpu_count(self):
-        with patch.dict(os.environ, {"ADS_RAY_NUMBA_THREADS": "99"},
+    def test_worker_numba_thread_override_is_clamped_to_cpu_count(self):
+        with patch.dict(os.environ, {"ADS_WORKER_NUMBA_THREADS": "99"},
                         clear=True):
             self.assertEqual(
-                runtime_config.ray_numba_threads(cpu_count=12), 12)
+                runtime_config.worker_numba_threads(cpu_count=12), 12)
+
+    def test_analysis_worker_count_respects_thread_count(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                runtime_config.analysis_worker_count(
+                    20, numba_threads=1, cpu_count=12),
+                12)
+            self.assertEqual(
+                runtime_config.analysis_worker_count(
+                    20, numba_threads=4, cpu_count=12),
+                3)
 
     def test_svml_is_opt_in(self):
         with patch.dict(os.environ, {}, clear=True):

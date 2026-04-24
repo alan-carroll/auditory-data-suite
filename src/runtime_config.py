@@ -1,4 +1,4 @@
-"""Runtime defaults for optional acceleration and nested parallelism."""
+"""Runtime defaults for optional acceleration and local parallelism."""
 from __future__ import annotations
 
 import os
@@ -22,21 +22,8 @@ def _truthy(value):
 
 
 def svml_enabled():
-    """Return whether Bayesian Bins should ask llvmlite to use SVML.
-
-    SVML is kept off by default because it is not portable across the target
-    setups and has previously crashed Ray workers. Users can still opt in with
-    ADS_ENABLE_SVML=1 when benchmarking a known-good machine.
-    """
+    """Return whether Bayesian Bins should ask llvmlite to use SVML."""
     return _truthy(os.environ.get("ADS_ENABLE_SVML", "0"))
-
-
-def configure_analysis_process_environment():
-    """Set safe process-level defaults before Ray/Numba-heavy imports."""
-    os.environ.setdefault("RAY_DEDUP_LOGS", "0")
-    os.environ.setdefault("RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO", "0")
-    os.environ.setdefault("ADS_ENABLE_SVML", "0")
-    configure_svml_environment()
 
 
 def configure_svml_environment():
@@ -45,51 +32,61 @@ def configure_svml_environment():
         os.environ.setdefault("NUMBA_DISABLE_INTEL_SVML", "1")
 
 
-def ray_numba_threads(cpu_count=None):
-    """Return the Numba thread count to use inside each Ray worker.
+def configure_analysis_process_environment():
+    """Set safe process-level defaults before Numba-heavy imports."""
+    os.environ.setdefault("ADS_ENABLE_SVML", "0")
+    configure_svml_environment()
 
-    Subject analysis usually runs many files, so the simple and stable default
-    is one Numba thread per Ray task and Ray owns outer parallelism.
-    ADS_RAY_NUMBA_THREADS is available for benchmarking or machine-specific
+
+def worker_numba_threads(cpu_count=None):
+    """Return the Numba thread count to use inside each analysis worker.
+
+    Subject analysis usually runs many files, so the stable default is one Numba
+    thread per file worker and process-level parallelism owns the outer loop.
+    ADS_WORKER_NUMBA_THREADS is available for benchmarking or machine-specific
     tuning.
     """
-    override = os.environ.get("ADS_RAY_NUMBA_THREADS")
+    override = os.environ.get("ADS_WORKER_NUMBA_THREADS")
     cpu_count = available_cpus() if cpu_count is None else max(1, cpu_count)
     if not override:
         return 1
     return min(cpu_count, _positive_int(override, 1))
 
 
-def ray_worker_env_vars(numba_threads):
-    """Environment vars Ray should apply before worker imports/JIT work."""
+def analysis_worker_count(total_tasks, numba_threads=None, cpu_count=None):
+    """Return how many local worker processes to run."""
+    total_tasks = max(1, int(total_tasks))
+    cpu_count = available_cpus() if cpu_count is None else max(1, cpu_count)
+    numba_threads = (
+        worker_numba_threads(cpu_count=cpu_count)
+        if numba_threads is None else max(1, int(numba_threads))
+    )
+    default_workers = max(1, cpu_count // numba_threads)
+    override = os.environ.get("ADS_ANALYSIS_WORKERS")
+    if override:
+        default_workers = _positive_int(override, default_workers)
+    return max(1, min(total_tasks, default_workers))
+
+
+def worker_env_vars(numba_threads):
+    """Environment vars analysis workers should inherit before imports/JIT."""
     threads = str(max(1, int(numba_threads)))
-    env_vars = {
+    return {
         "NUMBA_NUM_THREADS": threads,
         "OMP_NUM_THREADS": threads,
         "OPENBLAS_NUM_THREADS": threads,
         "MKL_NUM_THREADS": threads,
         "VECLIB_MAXIMUM_THREADS": threads,
-        "RAY_DEDUP_LOGS": os.environ.get("RAY_DEDUP_LOGS", "0"),
-        "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": os.environ.get(
-            "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO", "0"),
-        "ADS_ENABLE_SVML": os.environ.get("ADS_RAY_ENABLE_SVML", "0"),
+        "ADS_ENABLE_SVML": os.environ.get("ADS_WORKER_ENABLE_SVML", "0"),
         "NUMBA_DISABLE_INTEL_SVML": (
-            "0" if _truthy(os.environ.get("ADS_RAY_ENABLE_SVML", "0"))
+            "0" if _truthy(os.environ.get("ADS_WORKER_ENABLE_SVML", "0"))
             else "1"
         ),
     }
-    pythonpath = os.environ.get("PYTHONPATH")
-    if pythonpath:
-        env_vars["PYTHONPATH"] = pythonpath
-    return env_vars
 
 
-def configure_numba_worker_threads(numba_threads):
-    """Mask Numba's thread pool in a Ray worker.
-
-    NUMBA_NUM_THREADS sets the maximum pool size at import time; set_num_threads
-    masks the active count for already-imported workers.
-    """
+def configure_numba_threads(numba_threads):
+    """Mask Numba's thread pool in a worker process."""
     threads = max(1, int(numba_threads))
     try:
         import numba as nb
@@ -106,11 +103,18 @@ def configure_numba_worker_threads(numba_threads):
     return threads
 
 
+def configure_worker_process(numba_threads):
+    """Apply worker process env/thread settings."""
+    os.environ.update(worker_env_vars(numba_threads))
+    return configure_numba_threads(numba_threads)
+
+
 def runtime_summary():
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
         "cpus": available_cpus(),
-        "ray_numba_threads": ray_numba_threads(),
+        "worker_processes": analysis_worker_count(10),
+        "worker_numba_threads": worker_numba_threads(),
         "svml_enabled": svml_enabled(),
     }

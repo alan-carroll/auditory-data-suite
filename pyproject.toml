@@ -24,7 +24,6 @@ dependencies = [
   "packaging",
   "pandas",
   "Pillow",
-  "ray",
   "scikit-image",
   "scipy",
   "shapely",

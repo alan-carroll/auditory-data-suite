@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Benchmark Ray outer parallelism against Numba inner parallelism."""
+"""Benchmark stdlib process workers against serial Bayesian Bins analysis."""
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -18,15 +20,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from runtime_config import (  # noqa: E402
+    analysis_worker_count,
     configure_analysis_process_environment,
-    configure_numba_worker_threads,
-    ray_numba_threads,
-    ray_worker_env_vars,
+    configure_worker_process,
+    worker_env_vars,
+    worker_numba_threads,
 )
 
 configure_analysis_process_environment()
-
-import ray  # noqa: E402
 
 
 def parse_args():
@@ -35,11 +36,9 @@ def parse_args():
     parser.add_argument("--analysis", default="frozen")
     parser.add_argument("--sites", type=int, default=12)
     parser.add_argument("--repeats", type=int, default=2)
-    parser.add_argument(
-        "--threads",
-        default="auto,1,2,3,4,6,12",
-        help="Comma-separated Numba thread counts, or auto.")
-    parser.add_argument("--num-cpus", type=int)
+    parser.add_argument("--numba-threads", type=int)
+    parser.add_argument("--workers", type=int)
+    parser.add_argument("--serial", action="store_true")
     parser.add_argument(
         "--mode", choices=("sdf", "no-sdf"), default="sdf")
     return parser.parse_args()
@@ -80,24 +79,8 @@ def load_demo_sites(demo_json, analysis, site_count):
     return sites, n_sweeps, analysis_id
 
 
-def parse_threads(value, site_count):
-    threads = []
-    for raw_part in value.split(","):
-        part = raw_part.strip().lower()
-        if not part:
-            continue
-        if part == "auto":
-            thread_count = ray_numba_threads()
-        else:
-            thread_count = int(part)
-        if thread_count > 0 and thread_count not in threads:
-            threads.append(thread_count)
-    return threads
-
-
-@ray.remote
 def analyze_site(site, n_sweeps, numba_threads, return_sdf):
-    configure_numba_worker_threads(numba_threads)
+    configure_worker_process(numba_threads)
     import bayesian_bins as bb
 
     return bb.analyze_psth(
@@ -115,16 +98,22 @@ def analyze_site(site, n_sweeps, numba_threads, return_sdf):
     )["total_prob"]
 
 
-def run_once(sites, n_sweeps, numba_threads, return_sdf):
-    task = analyze_site.options(
-        num_cpus=numba_threads,
-        runtime_env={"env_vars": ray_worker_env_vars(numba_threads)},
-    )
+def run_serial_once(sites, n_sweeps, numba_threads, return_sdf):
     start = time.perf_counter()
-    ray.get([
-        task.remote(site, n_sweeps, numba_threads, return_sdf)
+    for site in sites:
+        analyze_site(site, n_sweeps, numba_threads, return_sdf)
+    return time.perf_counter() - start
+
+
+def run_process_once(executor, sites, n_sweeps, numba_threads, return_sdf):
+    start = time.perf_counter()
+    futures = [
+        executor.submit(analyze_site, site, n_sweeps, numba_threads,
+                        return_sdf)
         for site in sites
-    ])
+    ]
+    for future in futures:
+        future.result()
     return time.perf_counter() - start
 
 
@@ -132,29 +121,44 @@ def main():
     args = parse_args()
     sites, n_sweeps, analysis_id = load_demo_sites(
         args.demo_json, args.analysis, args.sites)
-    thread_counts = parse_threads(args.threads, len(sites))
+    numba_threads = args.numba_threads or worker_numba_threads()
+    workers = args.workers or analysis_worker_count(
+        len(sites), numba_threads=numba_threads)
     return_sdf = args.mode == "sdf"
 
-    ray.init(num_cpus=args.num_cpus, include_dashboard=False,
-             ignore_reinit_error=True, log_to_driver=False)
     print(
         f"analysis={args.analysis} analysis_id={analysis_id} "
-        f"sites={len(sites)} n_sweeps={n_sweeps} mode={args.mode}"
+        f"sites={len(sites)} n_sweeps={n_sweeps} mode={args.mode} "
+        f"workers={workers} numba_threads={numba_threads} "
+        f"serial={args.serial}"
     )
-    for numba_threads in thread_counts:
-        # Warm workers/JIT before timing.
-        run_once(sites, n_sweeps, numba_threads, return_sdf)
+
+    if args.serial or workers == 1:
+        run_serial_once(sites, n_sweeps, numba_threads, return_sdf)
         times = [
-            run_once(sites, n_sweeps, numba_threads, return_sdf)
+            run_serial_once(sites, n_sweeps, numba_threads, return_sdf)
             for _ in range(args.repeats)
         ]
-        median = sorted(times)[len(times) // 2]
-        runs = ", ".join(f"{value:.3f}" for value in times)
-        print(
-            f"threads={numba_threads} median={median:.3f}s "
-            f"per_site={median / len(sites):.3f}s runs=[{runs}]"
-        )
-    ray.shutdown()
+    else:
+        os.environ.update(worker_env_vars(numba_threads))
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=configure_worker_process,
+            initargs=(numba_threads,),
+        ) as executor:
+            run_process_once(executor, sites, n_sweeps, numba_threads,
+                             return_sdf)
+            times = [
+                run_process_once(executor, sites, n_sweeps, numba_threads,
+                                 return_sdf)
+                for _ in range(args.repeats)
+            ]
+    median = sorted(times)[len(times) // 2]
+    runs = ", ".join(f"{value:.3f}" for value in times)
+    print(
+        f"median={median:.3f}s per_site={median / len(sites):.3f}s "
+        f"runs=[{runs}]"
+    )
 
 
 if __name__ == "__main__":

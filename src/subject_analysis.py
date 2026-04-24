@@ -1,16 +1,19 @@
 import cv2
 import numpy as np
 import os
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from dataclasses import dataclass
 import pandas as pd
 from skimage.measure import label, regionprops
 import datetime
 from runtime_config import (
+    analysis_worker_count,
     configure_analysis_process_environment,
-    configure_numba_worker_threads,
-    ray_numba_threads,
-    ray_worker_env_vars,
+    configure_worker_process,
+    worker_env_vars,
+    worker_numba_threads,
 )
 
 configure_analysis_process_environment()
@@ -19,9 +22,7 @@ from brainware import BrainwareSrcIO, BrainwareF32IO
 from db_adapter import JSONStore
 import cli_utils as cli
 import analysis_functions as afunc
-from stim_types import enabled_stim_types
-
-import ray
+from stim_types import STIM_BY_KEY, enabled_stim_types
 
 from digit_ocr import DigitOCR
 
@@ -320,27 +321,76 @@ def _gather_brainware_files(dir_path, enabled_stims, use_f32, nums, ic_pens,
     return bw_files
 
 
-@ray.remote
-def _analyze_stimulus_file(stim, idx, file, total, use_f32, ic_pens,
+def _brainware_io_for_path(file_path, use_f32):
+    bw_io = BrainwareF32IO if use_f32 else BrainwareSrcIO
+    return bw_io(filename=file_path)
+
+
+def _analyze_stimulus_file(stim_key, idx, file_path, total, use_f32, ic_pens,
                            worker_kwargs, numba_threads):
     try:
-        configure_numba_worker_threads(numba_threads)
+        configure_worker_process(numba_threads)
+        stim = STIM_BY_KEY[stim_key]
+        file = _brainware_io_for_path(file_path, use_f32)
         return stim.analyze_file(
             idx=idx,
             file=file,
             total=total,
             use_f32=use_f32,
-            ic_pens=ic_pens,
+            ic_pens=np.asarray(ic_pens),
             **worker_kwargs,
         )
     except Exception as e:
-        file_name = getattr(file, "_filename", None)
-        if file_name is None:
-            file_name = getattr(file, "filename", "<unknown file>")
         raise RuntimeError(
-            f"{stim.key} analysis failed for file {file_name!r} at worker "
+            f"{stim_key} analysis failed for file {file_path!r} at worker "
             f"index {idx} of {total}"
         ) from e
+
+
+def _run_stimulus_file_analysis(stim, files, use_f32, ic_pens, worker_kwargs):
+    total = len(files)
+    numba_threads = worker_numba_threads()
+    worker_count = analysis_worker_count(total, numba_threads=numba_threads)
+    os.environ.update(worker_env_vars(numba_threads))
+    multiprocessing.freeze_support()
+    cli.info(
+        f"Using {worker_count} local worker"
+        f"{'' if worker_count == 1 else 's'} with {numba_threads} Numba "
+        f"thread{'' if numba_threads == 1 else 's'} each for {stim.label}."
+    )
+
+    args = [
+        (
+            stim.key,
+            i,
+            getattr(file, "_filename", None) or getattr(file, "filename", None),
+            total,
+            use_f32,
+            tuple(ic_pens),
+            worker_kwargs,
+            numba_threads,
+        )
+        for i, file in enumerate(files)
+    ]
+    missing_paths = [i for i, arg in enumerate(args) if arg[2] is None]
+    if missing_paths:
+        raise ValueError(
+            f"Cannot analyze {stim.label}: file path missing for indices "
+            f"{missing_paths}")
+
+    if worker_count == 1:
+        return [_analyze_stimulus_file(*arg) for arg in args]
+
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=configure_worker_process,
+        initargs=(numba_threads,),
+    ) as executor:
+        futures = [
+            executor.submit(_analyze_stimulus_file, *arg)
+            for arg in args
+        ]
+        return [future.result() for future in futures]
 
 
 def _prompt_ic_map_options(config_dict):
@@ -651,29 +701,14 @@ def run_brainware_analysis(run_ctx, map_data=None):
         if not files:
             continue
 
-        total = len(files)
         worker_kwargs = stim.worker_kwargs(
             config_dict,
             analysis_id=analysis_id,
             final_file_df=final_file_df,
             return_sdf=return_sdf,
         )
-        numba_threads = ray_numba_threads()
-        cli.info(
-            f"Using Ray workers with {numba_threads} Numba thread"
-            f"{'' if numba_threads == 1 else 's'} each for {stim.label}."
-        )
-        analyze_task = _analyze_stimulus_file.options(
-            num_cpus=numba_threads,
-            runtime_env={"env_vars": ray_worker_env_vars(numba_threads)},
-        )
-        results = ray.get([
-            analyze_task.remote(
-                stim, i, f, total, use_f32, ic_pens, worker_kwargs,
-                numba_threads
-            )
-            for i, f in enumerate(files)
-        ])
+        results = _run_stimulus_file_analysis(
+            stim, files, use_f32, ic_pens, worker_kwargs)
         cli.success(f"\nSaving {stim.label} data...")
         _route_and_insert(results, stim, db, ic_bool, ic_pens, ic_points_df)
 
