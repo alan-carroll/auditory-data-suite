@@ -36,6 +36,50 @@ The old C++ source separates a few concepts that are easy to blur together:
 In Python naming, `sigma` and `gamma` play the role of beta prior exponents.
 DenseTC usually estimates them from spontaneous rate instead of fitting them.
 
+## Optional Prior Fitting
+
+`bayesian_bins.fit_prior_exponents()` mirrors the optional original C++ simplex path for fitting beta prior exponents. It uses SciPy's Nelder-Mead optimizer over:
+
+- `gamma`, equivalent to C++ `egap`
+- `sigma`, equivalent to C++ `efire`
+
+The objective follows the C++ code:
+
+- maximize total evidence, `P(D)`
+- include the same weak gamma-prior-style penalty over firing probability and
+  prior magnitude
+- constrain `gamma` to `1..300`
+- constrain `sigma` to `0.001..300`
+
+This is diagnostic/experimental. DenseTC defaults do not enable it.
+
+Example:
+
+```python
+import bayesian_bins as bb
+
+fit = bb.fit_prior_exponents(
+    psth,
+    n_sweeps,
+    max_t=250,
+    max_m=10,
+)
+print(fit["sigma"], fit["gamma"], fit["firing_prob"])
+```
+
+To run an analysis with fitted priors:
+
+```python
+result = bb.analyze_psth(
+    psth,
+    n_sweeps,
+    max_t=250,
+    max_m=10,
+    fit_priors=True,
+)
+print(result["prior_fit"])
+```
+
 ## Current DenseTC Baseline
 
 The current default DenseTC behavior intentionally preserves the frozen demo
@@ -181,6 +225,20 @@ breaks frozen exact matching. Keep the production default at `offset_min_run=10`
 unless there is a deliberate decision to prioritize manual-style offsets over
 frozen auto-analysis compatibility.
 
+Prior fitting sweep:
+
+```bash
+./src/.venv/bin/python scripts/benchmark_bayesian_bins.py \
+  --analysis manual \
+  --sites 3 \
+  --check-only \
+  --fit-priors \
+  --prior-fit-maxiter 50
+```
+
+Keep site counts low while experimenting. Fitting priors runs an optimizer for
+each site, and each objective evaluation recomputes Bayesian evidence.
+
 ## Known Findings
 
 - Disabling broad `fastmath` on `nb_max_logsumexp` fixed the all-`-inf` to
@@ -196,7 +254,7 @@ frozen auto-analysis compatibility.
 
 ## Future Work
 
-- Add an optional prior-hyperparameter fitter mirroring the C++ simplex path.
+- Compare fitted-prior analyses against frozen/manual demo targets.
 - Revisit Ray plus Numba thread settings so outer process parallelism and inner
   Numba parallelism do not oversubscribe CPUs.
 - Re-evaluate SVML as an opt-in acceleration path on supported platforms only.

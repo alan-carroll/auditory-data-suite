@@ -59,6 +59,10 @@ def parse_args():
     parser.add_argument("--expect-onset-matches", type=int)
     parser.add_argument("--expect-peak-matches", type=int)
     parser.add_argument("--expect-offset-matches", type=int)
+    parser.add_argument("--fit-priors", action="store_true")
+    parser.add_argument("--prior-fit-maxiter", type=int, default=200)
+    parser.add_argument("--initial-sigma", type=float)
+    parser.add_argument("--initial-gamma", type=float)
     return parser.parse_args()
 
 
@@ -141,6 +145,11 @@ def analyze_site(module, site, n_sweeps, return_sdf, args):
     min_sig_bound, max_sig_bound = get_signal_bounds(
         args, site["spont_firing_rate_hz"])
     u_bound = args.u_bound if args.u_bound is not None else args.max_m
+    prior_fit_options = {"maxiter": args.prior_fit_maxiter}
+    if args.initial_sigma is not None:
+        prior_fit_options["initial_sigma"] = args.initial_sigma
+    if args.initial_gamma is not None:
+        prior_fit_options["initial_gamma"] = args.initial_gamma
 
     return module.analyze_psth(
         np.array(site["psth"], dtype=np.int64),
@@ -155,6 +164,8 @@ def analyze_site(module, site, n_sweeps, return_sdf, args):
         min_sig_bound=min_sig_bound,
         max_sig_bound=max_sig_bound,
         return_sdf=return_sdf,
+        fit_priors=args.fit_priors,
+        prior_fit_options=prior_fit_options,
     )
 
 

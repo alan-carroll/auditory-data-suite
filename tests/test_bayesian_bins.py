@@ -73,6 +73,24 @@ class BayesianBinsRegressionTests(unittest.TestCase):
         self.assertEqual(lat["offset"], site["offset_ms"])
         self.assertTrue(np.isfinite(lat["lats"]).all())
 
+    def test_prior_exponent_fit_returns_finite_bounded_values(self):
+        site = self._load_demo_site(1)
+
+        fit = bb.fit_prior_exponents(
+            np.array(site["psth"], dtype=np.int64),
+            n_sweeps=1296,
+            max_t=40,
+            max_m=3,
+            maxiter=5,
+        )
+
+        self.assertTrue(np.isfinite(fit["sigma"]))
+        self.assertTrue(np.isfinite(fit["gamma"]))
+        self.assertGreaterEqual(fit["sigma"], 0.001)
+        self.assertLessEqual(fit["sigma"], 300)
+        self.assertGreaterEqual(fit["gamma"], 1)
+        self.assertLessEqual(fit["gamma"], 300)
+
 
 if __name__ == "__main__":
     unittest.main()

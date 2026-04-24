@@ -7,7 +7,7 @@ if os.environ.get("ADS_ENABLE_SVML") == "1":
     binding.set_option('SVML', '-vector-library=SVML')
 
 import numpy as np
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 import numba as nb
 import ctypes
 
@@ -549,10 +549,96 @@ def get_sdf(t_big_e, t_m_priors, t_interval_evidences, t_event_counts,
 
     return t_sdf
 
+
+def calc_total_evidence(psth, n_sweeps, sigma, gamma, max_t=None, max_m=10):
+    """Return log P(D), assuming a uniform prior over M."""
+    if max_t is None:
+        max_t = len(psth)
+
+    event_counts = psth.cumsum()
+    interval_evidences = nb_precompute_interval_evidences(
+        event_counts, n_sweeps, max_t, sigma, gamma)
+    m_priors = nb_calc_m_priors(max_m, max_t, sigma, gamma)
+    big_e = nb_calc_big_e(m_priors, interval_evidences, max_m, max_t)
+    return nb_max_logsumexp(big_e) - np.log(max_m + 1)
+
+
+def fit_prior_exponents(psth, n_sweeps, max_t=None, max_m=10,
+                        initial_sigma=1.0, initial_gamma=32.0,
+                        shape_f=2.0, scale_f=0.030,
+                        shape_g=2.0, scale_g=1.0,
+                        sigma_bounds=(0.001, 300.0),
+                        gamma_bounds=(1.0, 300.0),
+                        maxiter=200, xatol=1e-3, fatol=1e-3):
+    """
+    Fit beta prior exponents using the optional original-C++ simplex objective.
+
+    C++ names these values efire and egap. In this module, sigma corresponds to
+    efire and gamma corresponds to egap.
+    """
+    if max_t is None:
+        max_t = len(psth)
+
+    psth = np.asarray(psth)
+    initial = np.array([
+        np.clip(initial_gamma, *gamma_bounds),
+        np.clip(initial_sigma, *sigma_bounds),
+    ], dtype=np.float64)
+
+    def objective(params):
+        gamma, sigma = params
+        if not (gamma_bounds[0] <= gamma <= gamma_bounds[1]):
+            return np.inf
+        if not (sigma_bounds[0] <= sigma <= sigma_bounds[1]):
+            return np.inf
+
+        total_evidence = calc_total_evidence(
+            psth, n_sweeps, sigma, gamma, max_t=max_t, max_m=max_m)
+        firing_prior = sigma / (gamma + sigma) / scale_f
+        magnitude_prior = 0.5 * (sigma * sigma + gamma * gamma) / scale_g
+        if firing_prior <= 0 or magnitude_prior <= 0:
+            return np.inf
+
+        return (
+            -total_evidence
+            - (shape_f - 1.0) * np.log(firing_prior)
+            + firing_prior
+            - (shape_g - 1.0) * np.log(magnitude_prior)
+            + magnitude_prior
+        )
+
+    result = minimize(
+        objective,
+        initial,
+        method="Nelder-Mead",
+        options={"maxiter": maxiter, "xatol": xatol, "fatol": fatol},
+    )
+    gamma, sigma = result.x
+    gamma = float(np.clip(gamma, *gamma_bounds))
+    sigma = float(np.clip(sigma, *sigma_bounds))
+    firing_prob = sigma / (sigma + gamma)
+    firing_sd = np.sqrt(gamma / (gamma + sigma + 1) / (gamma + sigma) *
+                        firing_prob)
+
+    return {
+        "sigma": sigma,
+        "gamma": gamma,
+        "firing_prob": float(firing_prob),
+        "firing_sd": float(firing_sd),
+        "total_evidence": float(calc_total_evidence(
+            psth, n_sweeps, sigma, gamma, max_t=max_t, max_m=max_m)),
+        "objective": float(objective((gamma, sigma))),
+        "success": bool(result.success),
+        "message": result.message,
+        "nit": result.nit,
+        "nfev": result.nfev,
+    }
+
+
 def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None, 
                  max_t=None, max_m=10, lat_start=1, lat_end=None, l_bound=1,
                  u_bound=None, min_sig_bound=None, max_sig_bound=None, 
-                 return_sdf=True):
+                 return_sdf=True, fit_priors=False, prior_fit_options=None):
     """
     Main function to analyze a given PSTH.
     Returns onset latency and optionally an SDF.
@@ -587,6 +673,9 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
       narrower ranges when they have validated domain-specific expectations.
     return_sdf: Return a Spike Density, or not.
       Takes a minute to do, but is vry nice.
+    fit_priors: Fit sigma/gamma with the optional C++ simplex-style objective
+      before latency/SDF analysis.
+    prior_fit_options: Dict of keyword arguments passed to fit_prior_exponents.
     
     
     """
@@ -614,6 +703,16 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
         min_sig_bound = 0.0
     if max_sig_bound is None:
         max_sig_bound = 0.1
+
+    prior_fit = None
+    if fit_priors:
+        options = {} if prior_fit_options is None else dict(prior_fit_options)
+        options.setdefault("initial_sigma", sigma)
+        options.setdefault("initial_gamma", gamma)
+        prior_fit = fit_prior_exponents(
+            psth, n_sweeps, max_t=max_t, max_m=max_m, **options)
+        sigma = prior_fit["sigma"]
+        gamma = prior_fit["gamma"]
         
     event_counts = psth.cumsum()
     sdf_interval_evidences = None
@@ -676,6 +775,7 @@ def analyze_psth(psth, n_sweeps, spont=None, sigma=None, gamma=None,
               "sdf": sdf,
               "m_priors": m_priors,
               "sigma": sigma,
-              "gamma": gamma}
+              "gamma": gamma,
+              "prior_fit": prior_fit}
     
     return result
