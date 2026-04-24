@@ -131,9 +131,14 @@ In auditory cortical maps, each point on the cortical surface is assumed to have
 In most real datasets you will still want to add or trim a few border points manually to keep the outer polygons reasonably shaped.
 
 **Controls:**
-- Left click: Add a border point
-- Right click: Remove last border point
-- Esc / Close window: Accept border points
+- Interaction menu / toolbar: switch between Add, Move, Delete, and Pan modes
+- A / M / D / P: keyboard shortcuts for those interaction modes
+- Move and Delete modes: hover near a buffer point to target it with a ring
+- Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y): undo and redo point edits
+- Mouse wheel or View menu: zoom; Pan mode drags the view
+- Export or Accept and Export: save reusable buffer-point CSV files
+- Load: bring a saved buffer-point CSV back into the picker
+- Esc / Accept / Close window: accept border points
 
 ![Voronoi tessellation after manually adding more border points](resources/img/demo_postvor.png)
 
@@ -142,6 +147,7 @@ There is also a standalone demo harness if you just want to play around:
 ```bash
 python demo/voronoi_picker_demo.py
 python demo/voronoi_picker_demo.py path/to/coords.csv
+python demo/voronoi_picker_demo.py path/to/coords.csv --buffer-points saved_buffer.csv
 ```
 
 ### Analysis outputs

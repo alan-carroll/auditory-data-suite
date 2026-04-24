@@ -114,9 +114,10 @@ def pick_voronoi(map_points_df, map_width, map_height):
     # Use the interactive Voronoi picker to refine additional border points.
     cli.note(
         "Add additional border points to voronoi diagram as necessary."
-        "\nLeft-click adds a point."
-        "\nRight-click removes last added point."
-        "\n<Esc> or exit window to accept points and continue."
+        "\nUse Add/Move/Delete modes from the Interaction menu or toolbar."
+        "\nCtrl+Z undoes, Ctrl+Shift+Z redoes, and mouse wheel zooms."
+        "\nUse Export or Accept and Export to save reusable buffer points."
+        "\n<Esc>, Accept, or exit window to accept points and continue."
     )
     bonus_pts = voronoi_picker.pick_points(size=(round(map_width / 1.5), 
                                                  round(map_height / 1.5)),

@@ -6,6 +6,7 @@ Run with built-in sample points:
 
 Run with a CSV containing x/y coordinates:
     python demo/voronoi_picker_demo.py path/to/coords.csv
+    python demo/voronoi_picker_demo.py path/to/coords.csv --buffer-points saved.csv
 
 The CSV may contain either:
   * x,y
@@ -55,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         help="Optional CSV path to save the accepted buffer points.",
+    )
+    parser.add_argument(
+        "--buffer-points",
+        help="Optional exported buffer-point CSV to load instead of "
+             "auto-generating the initial border.",
     )
     parser.add_argument(
         "--force-normalize",
@@ -167,7 +173,10 @@ def build_initial_buffer_points(base_points: np.ndarray) -> np.ndarray:
         cap_style=3,
         join_style=3,
     )
-    bonus_points = np.asarray([[x, y] for x, y in bonus.exterior.coords], dtype=np.float64)
+    bonus_points = np.asarray(
+        [[x, y] for x, y in bonus.exterior.coords],
+        dtype=np.float64,
+    )
     if len(bonus_points) > 1 and np.allclose(bonus_points[0], bonus_points[-1]):
         bonus_points = bonus_points[:-1]
     return bonus_points
@@ -176,21 +185,23 @@ def build_initial_buffer_points(base_points: np.ndarray) -> np.ndarray:
 def save_points(points: np.ndarray, output_path: str) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-
-    with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["x", "y"])
-        writer.writerows(points.tolist())
+    voronoi_picker.save_buffer_points_csv(points, output)
 
 
 def main() -> int:
     args = parse_args()
-    base_points = maybe_normalize(load_points(args.csv_path), force=args.force_normalize)
-    buffer_points = build_initial_buffer_points(base_points)
+    base_points = maybe_normalize(
+        load_points(args.csv_path),
+        force=args.force_normalize,
+    )
+    if args.buffer_points:
+        buffer_points = voronoi_picker.load_buffer_points_csv(args.buffer_points)
+    else:
+        buffer_points = build_initial_buffer_points(base_points)
 
     print(f"Loaded {len(base_points)} map points.")
-    print(f"Starting with {len(buffer_points)} auto-generated border points.")
-    print("Move mouse to preview, left click to add, right click to remove, Esc to accept.")
+    print(f"Starting with {len(buffer_points)} border points.")
+    print("Use Add/Move/Delete/Pan modes, Ctrl+Z undo, and Ctrl+Shift+Z redo.")
 
     accepted_points = voronoi_picker.pick_points(
         size=tuple(args.size),
