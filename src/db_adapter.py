@@ -16,6 +16,8 @@ Supported:
     coll.get_only()                                    # exactly one document
     coll.clone_by("analysis_id", old_id, new_id)       # duplicate matching docs
     coll.update_one({"_id": x}, {"$set": {...}})
+    coll.update_doc(doc_id, {"$set": {...}})
+    coll.update_many_by_doc_ids([(doc_id, {...}), ...])
     get_project_config(db)                             # read-through migration
 
 Not supported: delete, $gt/$lt/$in/$ne, nested paths, projections, sort.
@@ -158,6 +160,41 @@ class Collection:
         doc = self._table.get(_build_query(filter_))
         if doc is not None:
             self._table.update(update["$set"], doc_ids=[doc.doc_id])
+
+    def update_doc(self, doc_id, update):
+        """
+        Update one TinyDB document by its internal doc_id, avoiding a query scan.
+        """
+        if set(update) != {"$set"}:
+            raise NotImplementedError(
+                f"Only $set is supported, got {set(update)}")
+        self._table.update(update["$set"], doc_ids=[doc_id])
+
+    def update_many_by_doc_ids(self, doc_updates):
+        """
+        Apply per-document field updates in one TinyDB table mutation.
+
+        ``doc_updates`` is an iterable of ``(doc_id, fields)`` pairs, where
+        ``fields`` is the same flat mapping that would normally be passed to
+        ``$set``. Duplicate doc_ids are merged in input order.
+        """
+        fields_by_doc_id = {}
+        for doc_id, fields in doc_updates:
+            if not isinstance(fields, dict):
+                raise TypeError(
+                    "update_many_by_doc_ids() fields must be dicts")
+            fields_by_doc_id.setdefault(doc_id, {}).update(fields)
+
+        if not fields_by_doc_id:
+            return []
+
+        doc_ids = list(fields_by_doc_id)
+        updates_iter = iter(fields_by_doc_id[doc_id] for doc_id in doc_ids)
+
+        def apply_next_update(doc):
+            doc.update(next(updates_iter))
+
+        return self._table.update(apply_next_update, doc_ids=doc_ids)
 
 
 def _build_query(mongo_query):

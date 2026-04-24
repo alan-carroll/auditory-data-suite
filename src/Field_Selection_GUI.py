@@ -445,11 +445,8 @@ class SiteScreen(Screen):
             update_doc[f"bw{lvl}_khz"] = bw_khz[lvl]
             update_doc[f"bw{lvl}_octave"] = bw_oct[lvl]
 
-        self.gui_instance.densetc_analysis_collection.update_one(
-            {"_id": self.gui_instance.densetc_analysis[self.map_number]["_id"]},
-            {"$set": update_doc}
-        )
-        self.gui_instance.densetc_analysis[self.map_number].update(update_doc)
+        self.gui_instance._update_densetc_analysis_doc(
+            self.map_number, update_doc)
 
         self.gui_instance.analysis_metadata_collection.update_one(
             {"_id": self.gui_instance.analysis_id},
@@ -574,8 +571,7 @@ class FieldSelectionGUI(BoxLayout):
         self.status_popup_label = None
         self._saved_map_state = {}
         self._dirty_map_sites = set()
-        self._site_save_iter = None
-        self._save_batch_size = 1
+        self._pending_map_save_sites = []
         self._save_total_sites = 0
         self._saved_site_count = 0
         self._syncing_plot_flag_toggles = False
@@ -832,18 +828,70 @@ class FieldSelectionGUI(BoxLayout):
         self._saved_map_state[site_number] = (field_assignment, marked)
         self._refresh_site_dirty_state(site_number)
 
+    def _update_densetc_analysis_doc(self, site_number, update_doc):
+        analysis_doc = self.densetc_analysis[site_number]
+        doc_id = getattr(analysis_doc, "doc_id", None)
+        if doc_id is None:
+            self.densetc_analysis_collection.update_one(
+                {"_id": analysis_doc["_id"]},
+                {"$set": update_doc})
+        else:
+            self.densetc_analysis_collection.update_doc(
+                doc_id, {"$set": update_doc})
+        analysis_doc.update(update_doc)
+
+    def _bulk_update_densetc_analysis_docs(self, site_updates):
+        direct_updates = []
+        fallback_updates = []
+        for site_number, update_doc in site_updates:
+            analysis_doc = self.densetc_analysis[site_number]
+            doc_id = getattr(analysis_doc, "doc_id", None)
+            if doc_id is None:
+                fallback_updates.append((site_number, update_doc))
+            else:
+                direct_updates.append((doc_id, update_doc))
+
+        if direct_updates:
+            self.densetc_analysis_collection.update_many_by_doc_ids(
+                direct_updates)
+
+        for site_number, update_doc in fallback_updates:
+            analysis_doc = self.densetc_analysis[site_number]
+            self.densetc_analysis_collection.update_one(
+                {"_id": analysis_doc["_id"]},
+                {"$set": update_doc})
+
+        for site_number, update_doc in site_updates:
+            self.densetc_analysis[site_number].update(update_doc)
+
+    def _site_map_state_update(self, site_number):
+        field_assignment, marked = self._current_site_map_state(site_number)
+        return {
+            "marked": marked,
+            "field_assignment": field_assignment,
+        }
+
     def _persist_site_map_state(self, site_number):
         field_assignment, marked = self._current_site_map_state(site_number)
-        self.densetc_analysis_collection.update_one(
-            {"_id": self.densetc_analysis[site_number]["_id"]},
-            {"$set": {
-                "marked": marked,
-                "field_assignment": field_assignment,
-            }})
-        self.densetc_analysis[site_number]["marked"] = marked
-        self.densetc_analysis[site_number]["field_assignment"] = field_assignment
+        self._update_densetc_analysis_doc(
+            site_number,
+            {"marked": marked, "field_assignment": field_assignment})
         self._saved_map_state[site_number] = (field_assignment, marked)
         self._dirty_map_sites.discard(site_number)
+
+    def _persist_site_map_states(self, site_numbers):
+        site_updates = [
+            (site_number, self._site_map_state_update(site_number))
+            for site_number in site_numbers
+        ]
+        self._bulk_update_densetc_analysis_docs(site_updates)
+        for site_number, update_doc in site_updates:
+            saved_state = (
+                update_doc["field_assignment"],
+                update_doc["marked"],
+            )
+            self._saved_map_state[site_number] = saved_state
+            self._dirty_map_sites.discard(site_number)
 
     def _display_field_for_site(self, site_number):
         if self.marks_active:
@@ -1202,7 +1250,7 @@ class FieldSelectionGUI(BoxLayout):
             return
 
         self._set_loading_state(True)
-        self._site_save_iter = iter(sorted(self._dirty_map_sites))
+        self._pending_map_save_sites = sorted(self._dirty_map_sites)
         self._save_total_sites = len(self._dirty_map_sites)
         self._saved_site_count = 0
         self._show_status_popup()
@@ -1211,20 +1259,14 @@ class FieldSelectionGUI(BoxLayout):
         Clock.schedule_once(self._save_map_batch, LOAD_POPUP_START_DELAY_S)
 
     def _save_map_batch(self, _dt):
-        saved_this_tick = 0
-        while saved_this_tick < self._save_batch_size:
-            try:
-                site_number = next(self._site_save_iter)
-            except StopIteration:
-                self._finish_export_map_save()
-                return False
-            self._persist_site_map_state(site_number)
-            self._saved_site_count += 1
-            saved_this_tick += 1
-
+        sites_to_save = self._pending_map_save_sites
+        self._pending_map_save_sites = []
+        if sites_to_save:
+            self._persist_site_map_states(sites_to_save)
+            self._saved_site_count += len(sites_to_save)
         self._update_status_popup("Saving fields / marks", self._saved_site_count,
                                   self._save_total_sites, "sites")
-        Clock.schedule_once(self._save_map_batch, 0)
+        self._finish_export_map_save()
         return False
 
     def _finish_export_map_save(self):
@@ -1233,7 +1275,7 @@ class FieldSelectionGUI(BoxLayout):
         self.analysis_metadata_collection.update_one(
             {"_id": self.analysis_id},
             {"$set": {"last_modified": str(datetime.datetime.now())}})
-        self._site_save_iter = None
+        self._pending_map_save_sites = []
         self._set_loading_state(False)
         self._hide_status_popup()
         InfoPopup(
