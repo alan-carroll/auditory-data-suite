@@ -32,6 +32,7 @@ from field_definitions import (
     GUI_FIELDS,
     MARK_FIELD,
 )
+from gui_autosave import GUIAutosave
 from site_model import SiteModel, StimConfig
 
 # GUI tuning constants
@@ -47,6 +48,7 @@ MAP_BATCH_SIZE = 4
 MAP_BATCH_DELAY_S = 0.01
 LOAD_POPUP_START_DELAY_S = 0.05
 SCROLL_CENTER_DELAYS_S = (0, 0.05, 0.2)
+AUTOSAVE_DELAY_S = 2.0
 
 OVERVIEW_SITE_SIZE = (200, 150)  # width, height
 FIGSIZE_STEP_FACTOR = 0.75
@@ -137,12 +139,16 @@ class FieldSelectionApp(App):
     def build(self):
         return self.SM
 
+    def on_stop(self):
+        self.map_screen.gui.write_autosave_now()
+
 
 class MapScreen(Screen):
     def __init__(self, db_path, analysis_id, is_ic, **kwargs):
         """Container for main application."""
         super(MapScreen, self).__init__(**kwargs)
-        self.add_widget(FieldSelectionGUI(db_path, analysis_id, is_ic))
+        self.gui = FieldSelectionGUI(db_path, analysis_id, is_ic)
+        self.add_widget(self.gui)
 
 
 class SiteScreen(Screen):
@@ -299,6 +305,20 @@ class SiteScreen(Screen):
         self.densetc_plot.on_changes_signal.connect(self.changes_made)
         self.densetc_plot.on_cf_pick_signal.connect(self.cf_picked)
         self._syncing_plot_flag_checkbox = False
+
+    def _set_unsaved_ui(self, unsaved):
+        self.unsaved_changes = unsaved
+        self.save_changes_button.disabled = not unsaved
+        self.save_changes_button.background_color = [0.2, 0.65, 0, 1]
+        self.reset_button.disabled = not unsaved
+        self.reset_button.background_color = (
+            [0.7, 0.1, 0.15, 1] if unsaved else [0.25, 0.05, 0.1, 1]
+        )
+
+    def mark_recovered_unsaved(self):
+        self._set_unsaved_ui(True)
+        self.mark_site_toggle.state = (
+            "down" if self.densetc_plot.model.working.marked else "normal")
         
     def redraw(self):
         """Re-draw plots."""
@@ -348,14 +368,11 @@ class SiteScreen(Screen):
 
     def on_reset(self, _event):
         """Event to reset any un-saved analysis changes made to a site."""
-        self.unsaved_changes = False
-        self.save_changes_button.disabled = True
-        self.save_changes_button.background_color = [0.2, 0.65, 0, 1]
-        self.reset_button.disabled = True
-        self.reset_button.background_color = [0.25, 0.05, 0.1, 1]
+        self._set_unsaved_ui(False)
 
         self.densetc_plot.model.reset()
         self.redraw()
+        self.gui_instance.clear_detail_autosave(self.map_number)
 
         # Reset Marked toggle, if necessary
         self.mark_site_toggle.state = (
@@ -395,11 +412,7 @@ class SiteScreen(Screen):
         freqs = np.asarray(cfg.frequencies_hz)
         ints = np.asarray(cfg.intensities_db)
 
-        self.unsaved_changes = False
-        self.save_changes_button.disabled = True
-        self.save_changes_button.background_color = [0.2, 0.65, 0, 1]
-        self.reset_button.disabled = True
-        self.reset_button.background_color = [0.25, 0.05, 0.1, 1]
+        self._set_unsaved_ui(False)
 
         if not st.continuous_bw_idx or st.continuous_bw_idx[0] is None:
             # Manual edits were made without re-running auto-analyze,
@@ -459,6 +472,7 @@ class SiteScreen(Screen):
             self.gui_instance._saved_map_state.get(self.map_number, ("", False))[0],
             st.marked,
         )
+        self.gui_instance.clear_detail_autosave(self.map_number)
         self.redraw()
 
     def auto_tc_analyze(self, *_args, **_kwargs):
@@ -480,11 +494,8 @@ class SiteScreen(Screen):
 
     def changes_made(self, *_args, **_kwargs):
         """Event signaling analysis changes have been made."""
-        self.unsaved_changes = True
-        self.save_changes_button.disabled = False
-        self.save_changes_button.background_color = [0.2, 0.65, 0, 1]
-        self.reset_button.disabled = False
-        self.reset_button.background_color = [0.7, 0.1, 0.15, 1]
+        self._set_unsaved_ui(True)
+        self.gui_instance.mark_detail_autosave_dirty(self.map_number)
 
     def change_bubble_size(self, _slider, value):
         """Event signaling update to max bubble size for TC plot."""
@@ -545,6 +556,11 @@ class FieldSelectionGUI(BoxLayout):
 
         self._db_path = db_path
         self.analysis_id = analysis_id
+        self.autosave = GUIAutosave(db_path, analysis_id)
+        self._autosave_event = None
+        self._pending_recovery_payload = None
+        self._preserve_ignored_autosave = False
+        self._autosaved_detail_sites = set()
         self.ic_bool = is_ic    # Changes coloring of histograms based on latency
         self.map_loaded = False
         self.subject_database = None
@@ -809,6 +825,100 @@ class FieldSelectionGUI(BoxLayout):
                 f"{current}/{total} {noun}"
             )
 
+    def _show_autosave_recovery_popup(self, _dt):
+        payload = self._pending_recovery_payload
+        if payload is None:
+            return
+
+        overview_count = len(payload.get("overview", {}))
+        detail_count = len(payload.get("detail_sites", {}))
+        updated_at = payload.get("updated_at", "unknown time")
+        layout = BoxLayout(orientation="vertical", padding=16, spacing=12)
+        msg = Label(
+            text=(
+                "Unsaved GUI changes were found next to this database.\n"
+                f"Updated: {updated_at}\n"
+                f"{overview_count} overview site(s), "
+                f"{detail_count} detail site(s)"
+            ),
+            color=[0.96, 0.96, 0.96, 1],
+            halign="center",
+            valign="middle",
+        )
+        msg.bind(size=msg.setter("text_size"))
+        buttons = BoxLayout(orientation="horizontal", size_hint=(1, None),
+                            height=46, spacing=8)
+        recover = Button(text="Recover")
+        discard = Button(text="Discard")
+        later = Button(text="Later")
+        buttons.add_widget(recover)
+        buttons.add_widget(discard)
+        buttons.add_widget(later)
+        layout.add_widget(msg)
+        layout.add_widget(buttons)
+        popup = Popup(
+            title="Recover Unsaved Changes?",
+            content=layout,
+            size_hint=(None, None),
+            size=(520, 230),
+            auto_dismiss=False,
+        )
+
+        def recover_changes(_button):
+            self._recover_autosave_payload(payload)
+            self._pending_recovery_payload = None
+            self._preserve_ignored_autosave = False
+            popup.dismiss()
+            self.write_autosave_now()
+            InfoPopup("Recovered", "Unsaved changes restored.").open()
+
+        def discard_changes(_button):
+            self.autosave.delete()
+            self._pending_recovery_payload = None
+            self._preserve_ignored_autosave = False
+            popup.dismiss()
+
+        def keep_for_later(_button):
+            self._pending_recovery_payload = None
+            self._preserve_ignored_autosave = True
+            popup.dismiss()
+
+        recover.bind(on_release=recover_changes)
+        discard.bind(on_release=discard_changes)
+        later.bind(on_release=keep_for_later)
+        popup.open()
+
+    def _recover_autosave_payload(self, payload):
+        for site_key, state in payload.get("overview", {}).items():
+            try:
+                site_number = int(site_key)
+            except (TypeError, ValueError):
+                continue
+            self._apply_overview_autosave_state(site_number, state)
+
+        for site_key, state in payload.get("detail_sites", {}).items():
+            try:
+                site_number = int(site_key)
+            except (TypeError, ValueError):
+                continue
+            self._apply_detail_autosave_state(site_number, state)
+
+    def _apply_overview_autosave_state(self, site_number, state):
+        for field in FIELD_NAMES:
+            self.map_sets[field].discard(site_number)
+        field_assignment = state.get("field_assignment", "")
+        if field_assignment in FIELD_NAMES:
+            self.map_sets[field_assignment].add(site_number)
+
+        if state.get("marked", False):
+            self.map_sets[MARK_FIELD].add(site_number)
+        else:
+            self.map_sets[MARK_FIELD].discard(site_number)
+
+        self._refresh_site_dirty_state(site_number)
+        if site_number in self.vor_lines:
+            self._paint_cell(site_number)
+
     def _current_site_map_state(self, site_number):
         field_assignment = next(
             (field for field in FIELD_NAMES if site_number in self.map_sets[field]),
@@ -823,10 +933,121 @@ class FieldSelectionGUI(BoxLayout):
             self._dirty_map_sites.add(site_number)
         else:
             self._dirty_map_sites.discard(site_number)
+        if self.map_loaded:
+            self._schedule_autosave()
 
     def _set_saved_site_map_state(self, site_number, field_assignment, marked):
         self._saved_map_state[site_number] = (field_assignment, marked)
         self._refresh_site_dirty_state(site_number)
+
+    def _schedule_autosave(self):
+        self._preserve_ignored_autosave = False
+        if self._autosave_event is not None:
+            self._autosave_event.cancel()
+        self._autosave_event = Clock.schedule_once(
+            self.write_autosave_now, AUTOSAVE_DELAY_S)
+
+    def write_autosave_now(self, *_args):
+        if self._autosave_event is not None:
+            self._autosave_event.cancel()
+            self._autosave_event = None
+        if self.densetc_analysis is None:
+            return
+
+        overview = {
+            site_number: {
+                "field_assignment": self._current_site_map_state(site_number)[0],
+                "marked": self._current_site_map_state(site_number)[1],
+            }
+            for site_number in sorted(self._dirty_map_sites)
+        }
+        detail_sites = {}
+        detail_site_numbers = set(self._autosaved_detail_sites)
+        detail_site_numbers.update(
+            site_number for site_number, screen in self.site_screens.items()
+            if screen.unsaved_changes
+        )
+        for site_number in sorted(detail_site_numbers):
+            model = self.site_models.get(site_number)
+            if model is not None:
+                detail_sites[site_number] = self._detail_autosave_state(model)
+
+        if not overview and not detail_sites and self._preserve_ignored_autosave:
+            return
+        self._preserve_ignored_autosave = False
+        self.autosave.write(overview=overview, detail_sites=detail_sites)
+
+    def mark_detail_autosave_dirty(self, site_number):
+        self._autosaved_detail_sites.add(site_number)
+        self._schedule_autosave()
+
+    def clear_detail_autosave(self, site_number):
+        self._autosaved_detail_sites.discard(site_number)
+        self.write_autosave_now()
+
+    def _detail_autosave_state(self, model):
+        st = model.working
+        cfg = model.config
+        return {
+            "cf_idx": st.cf_idx,
+            "threshold_idx": st.thresh_idx,
+            "onset_ms": st.onset,
+            "offset_ms": st.offset,
+            "bw_idx": {
+                lvl: st.bw_idx[lvl]
+                for lvl in cfg.bw_levels_db
+            },
+            "marked": st.marked,
+        }
+
+    def _apply_detail_autosave_state(self, site_number, state):
+        model = self.site_models.get(site_number)
+        if model is None:
+            return
+        st = model.working
+        cfg = model.config
+        st.cf_idx = state.get("cf_idx", st.cf_idx)
+        st.thresh_idx = state.get("threshold_idx", st.thresh_idx)
+        st.onset = state.get("onset_ms", st.onset)
+        st.offset = state.get("offset_ms", st.offset)
+        raw = model.raw_psth
+        peak_hist = raw.copy()
+        peak_hist[:st.onset] = peak_hist[st.offset:] = 0
+        st.peak = int(np.argmax(peak_hist))
+        import analysis_functions as afunc
+        st.peak_driven_rate = afunc.get_peak_driven_rate(
+            raw[st.onset:st.offset], model.spont_rate, cfg.num_tones)
+        st.continuous_bw_idx = [None, None]
+        bw_idx = state.get("bw_idx", {})
+        st.bw_idx = {
+            lvl: list(bw_idx.get(str(lvl), st.bw_idx[lvl])
+                      or [None, None])
+            for lvl in cfg.bw_levels_db
+        }
+        st.marked = state.get("marked", st.marked)
+        if st.marked:
+            self.map_sets[MARK_FIELD].add(site_number)
+        else:
+            self.map_sets[MARK_FIELD].discard(site_number)
+        self._refresh_site_dirty_state(site_number)
+        if site_number in self.vor_lines:
+            self._paint_cell(site_number, unsaved_changes=True)
+        self._refresh_recovered_detail_overview(site_number)
+        self._autosaved_detail_sites.add(site_number)
+        if site_number in self.site_screens:
+            self.site_screens[site_number].mark_recovered_unsaved()
+
+    def _refresh_recovered_detail_overview(self, site_number):
+        overview = self.plot_dict.get(site_number)
+        if overview is None:
+            return
+        overview.re_plot()
+        try:
+            overview.figure_canvas.draw()
+        except ValueError:
+            # Keep recovery best-effort for non-responsive plots that
+            # occasionally cannot redraw cleanly.
+            overview.mark_dirty()
 
     def _update_densetc_analysis_doc(self, site_number, update_doc):
         analysis_doc = self.densetc_analysis[site_number]
@@ -931,8 +1152,9 @@ class FieldSelectionGUI(BoxLayout):
             "fill_rgba": fill_rgba,
         }
 
-    def _paint_cell(self, site_number, alpha=None):
-        state = self._cell_visual_state(site_number, alpha=alpha)
+    def _paint_cell(self, site_number, alpha=None, unsaved_changes=False):
+        state = self._cell_visual_state(
+            site_number, alpha=alpha, unsaved_changes=unsaved_changes)
         self.vor_lines[site_number].line.width = state["line_width"]
         self.vor_lines[site_number].color.rgb = state["line_rgb"]
         self.vor_meshes[site_number].color.rgba = state["fill_rgba"]
@@ -983,6 +1205,10 @@ class FieldSelectionGUI(BoxLayout):
             self.map_metadata = self.map_metadata_collection.get_only()
             self.analysis_metadata_collection = \
                 self.subject_database.analysis_metadata
+            analysis_metadata = self.analysis_metadata_collection.find_one(
+                {"_id": self.analysis_id})
+            if analysis_metadata is not None:
+                self.autosave.set_analysis_name(analysis_metadata.get("name"))
 
             if is_ic:
                 # IC has no stored map dimensions or voronoi polygons,
@@ -1026,6 +1252,7 @@ class FieldSelectionGUI(BoxLayout):
                 for num, doc in self.densetc_analysis.items()
             }
             self._dirty_map_sites.clear()
+            self._pending_recovery_payload = self.autosave.load()
             
             # One StimConfig shared by every SiteModel. Sweep length is
             # sniffed from a PSTH if the project config doesn't carry it.
@@ -1076,6 +1303,8 @@ class FieldSelectionGUI(BoxLayout):
             self.site_screens[site_number] = SiteScreen(
                 self, site_number, detail_plot,
                 name=f"Site {site_number}")
+            if site_number in self._autosaved_detail_sites:
+                self.site_screens[site_number].mark_recovered_unsaved()
         self.parent.manager.switch_to(self.site_screens[site_number])
 
     def _on_colormap(self, *_):
@@ -1276,6 +1505,7 @@ class FieldSelectionGUI(BoxLayout):
             {"_id": self.analysis_id},
             {"$set": {"last_modified": str(datetime.datetime.now())}})
         self._pending_map_save_sites = []
+        self.write_autosave_now()
         self._set_loading_state(False)
         self._hide_status_popup()
         InfoPopup(
@@ -1386,6 +1616,8 @@ class FieldSelectionGUI(BoxLayout):
         self._set_loading_state(False)
         self._hide_status_popup()
         self._schedule_center_scroll_view()
+        if self._pending_recovery_payload is not None:
+            Clock.schedule_once(self._show_autosave_recovery_popup, 0.1)
         print("\n *** Ready! *** \n")
 
     def _display_site(self, site):
