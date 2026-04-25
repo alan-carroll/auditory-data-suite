@@ -145,6 +145,12 @@ After OCR, the program shows a proof sheet of the recognized map numbers. You ca
 
 A demo analysis can be run by loading `demo/demo_config.json` for the project configuration and using the files supplied in the rest of the demo dir (when prompted for subject name, enter anything you earnestly wish for).
 
+If you installed from the release wheel, the demo directory is installed under your active environment prefix. You can print that location with:
+
+```bash
+python -c "import sys; print(sys.prefix + '/demo')"
+```
+
 For the included demo, use:
 
 - `demo/demo_config.json`

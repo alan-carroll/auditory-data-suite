@@ -1,4 +1,5 @@
 import cv2
+import gc
 import numpy as np
 import os
 import multiprocessing
@@ -414,6 +415,16 @@ def _run_stimulus_file_analysis(stim, files, use_f32, ic_pens, worker_kwargs):
         return [future.result() for future in futures]
 
 
+def _cleanup_gui_backends_before_workers():
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        pass
+    else:
+        plt.close("all")
+    gc.collect()
+
+
 def _prompt_ic_map_options(config_dict):
     ic_bool = False
     ic_only = False
@@ -716,6 +727,7 @@ def run_brainware_analysis(run_ctx, map_data=None):
     bw_files = _gather_brainware_files(dir_path, enabled_stims,
                                        use_f32, nums, ic_pens,
                                        config_dict)
+    _cleanup_gui_backends_before_workers()
 
     for stim in enabled_stims:
         files = bw_files.get(stim.key)

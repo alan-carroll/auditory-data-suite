@@ -355,6 +355,7 @@ class Picker:
         self.drag_start: Optional[tuple[int, int]] = None
         self.drag_view: Optional[tuple[float, float, float, float]] = None
         self._move_history_pushed = False
+        self._closing = False
         self._redraw_pending = False
         self._redraw_after_id: Optional[str] = None
         self._polygon_cache_key: Optional[tuple[tuple[int, int], bytes]] = None
@@ -766,6 +767,8 @@ class Picker:
         return "break"
 
     def finish(self, _event=None):
+        self._closing = True
+        self._cancel_pending_redraw()
         self.root.quit()
 
     def reset_view(self):
@@ -920,7 +923,7 @@ class Picker:
         self.status_text.set("   |   ".join(parts))
 
     def request_redraw(self, interactive: bool = False):
-        if self._redraw_pending:
+        if self._closing or self._redraw_pending:
             return
 
         self._redraw_pending = True
@@ -930,12 +933,13 @@ class Picker:
                 self.redraw,
             )
         else:
-            self._redraw_after_id = None
-            self.root.after_idle(self.redraw)
+            self._redraw_after_id = self.root.after_idle(self.redraw)
 
     def redraw(self):
         self._redraw_pending = False
         self._redraw_after_id = None
+        if self._closing:
+            return
         has_preview = self.mode.get() == _ADD and self._preview_is_new()
         all_point_parts = [self.input_points, self.buffer_points]
         if has_preview:
@@ -1055,10 +1059,23 @@ class Picker:
         )
 
     def run(self) -> np.ndarray:
-        self.root.mainloop()
-        result = self.buffer_points.copy()
-        self.root.destroy()
-        return result
+        try:
+            self.root.mainloop()
+            return self.buffer_points.copy()
+        finally:
+            self._cancel_pending_redraw()
+            self.root.destroy()
+
+    def _cancel_pending_redraw(self):
+        if self._redraw_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self._redraw_after_id)
+        except tk.TclError:
+            pass
+        finally:
+            self._redraw_after_id = None
+            self._redraw_pending = False
 
 
 def pick_points(size=(600, 600), input_points=None, buffer_points=None):
