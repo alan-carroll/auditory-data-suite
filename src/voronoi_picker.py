@@ -263,7 +263,8 @@ class Picker:
         self.height = max(200, int(size[1]))
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(800, 800)
 
         self.mode = tk.StringVar(value=_ADD)
         self.status_text = tk.StringVar()
@@ -279,6 +280,7 @@ class Picker:
         self.drag_view: Optional[tuple[float, float, float, float]] = None
         self._move_history_pushed = False
         self._redraw_pending = False
+        self._last_canvas_size: Optional[tuple[int, int]] = None
         self._undo_stack: list[np.ndarray] = []
         self._redo_stack: list[np.ndarray] = []
         self.view_xmin = 0.0
@@ -444,6 +446,7 @@ class Picker:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.canvas.bind("<Button-4>", self.on_mouse_wheel)
         self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
         self.root.bind("<Escape>", self.finish)
         self.root.bind_all("<Key-a>", lambda _event: self.set_mode(_ADD))
         self.root.bind_all("<Key-m>", lambda _event: self.set_mode(_MOVE))
@@ -543,6 +546,15 @@ class Picker:
         else:
             factor = 1.25
         self.zoom_view(factor, event=event)
+
+    def on_canvas_configure(self, event):
+        size = (max(1, int(event.width)), max(1, int(event.height)))
+        if size == self._last_canvas_size:
+            return
+
+        self._last_canvas_size = size
+        self.width, self.height = size
+        self.request_redraw()
 
     def add_point(self, point: np.ndarray):
         existing_points = self.input_points

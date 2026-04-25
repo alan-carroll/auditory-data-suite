@@ -196,7 +196,7 @@ def _action_analyze(state):
         completed = subject_analysis.run_program(state.config_dict,
                                                  state.version)
         if completed:
-            cli.banner("\nIt's over! :)\n\n")
+            cli.banner("\nIt's over! :)")
     except Exception as e:
         cli.fail(e, f"Analysis crashed: {e}\n"
                     "Traceback in check_after_crash.log.")
@@ -236,7 +236,7 @@ def _action_generate_from_final(state):
         try:
             completed = subject_analysis.run_brainware_analysis(run_ctx)
             if completed:
-                cli.banner("\nIt's over! :)\n\n")
+                cli.banner("\nIt's over! :)")
         finally:
             run_ctx.db.close()
     except Exception as e:

@@ -11,6 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import voronoi_picker
 
 
+class FakeRoot:
+    def __init__(self):
+        self.idle_callbacks = []
+
+    def after_idle(self, callback):
+        self.idle_callbacks.append(callback)
+
+
+class FakeConfigureEvent:
+    width = 900
+    height = 850
+
+
 class VoronoiPickerFileTests(unittest.TestCase):
     def test_export_and_load_buffer_points_round_trip(self):
         points = np.asarray([
@@ -57,6 +70,21 @@ class VoronoiPickerFileTests(unittest.TestCase):
             loaded,
             np.asarray([[0.1, 0.2], [0.3, 0.4]]),
         )
+
+    def test_canvas_configure_schedules_redraw(self):
+        picker = voronoi_picker.Picker.__new__(voronoi_picker.Picker)
+        picker.root = FakeRoot()
+        picker.width = 600
+        picker.height = 600
+        picker._last_canvas_size = None
+        picker._redraw_pending = False
+
+        picker.on_canvas_configure(FakeConfigureEvent())
+
+        self.assertEqual(picker.width, 900)
+        self.assertEqual(picker.height, 850)
+        self.assertTrue(picker._redraw_pending)
+        self.assertEqual(picker.root.idle_callbacks, [picker.redraw])
 
 
 if __name__ == "__main__":
