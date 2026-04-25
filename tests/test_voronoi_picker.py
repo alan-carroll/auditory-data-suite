@@ -15,13 +15,18 @@ class FakeRoot:
     def __init__(self):
         self.idle_callbacks = []
         self.timed_callbacks = []
+        self.canceled_callbacks = []
 
     def after_idle(self, callback):
         self.idle_callbacks.append(callback)
+        return f"idle-{len(self.idle_callbacks)}"
 
     def after(self, delay_ms, callback):
         self.timed_callbacks.append((delay_ms, callback))
         return f"after-{len(self.timed_callbacks)}"
+
+    def after_cancel(self, callback_id):
+        self.canceled_callbacks.append(callback_id)
 
 
 class FakeConfigureEvent:
@@ -82,6 +87,7 @@ class VoronoiPickerFileTests(unittest.TestCase):
         picker.width = 600
         picker.height = 600
         picker._last_canvas_size = None
+        picker._closing = False
         picker._redraw_pending = False
 
         picker.on_canvas_configure(FakeConfigureEvent())
@@ -90,10 +96,12 @@ class VoronoiPickerFileTests(unittest.TestCase):
         self.assertEqual(picker.height, 850)
         self.assertTrue(picker._redraw_pending)
         self.assertEqual(picker.root.idle_callbacks, [picker.redraw])
+        self.assertEqual(picker._redraw_after_id, "idle-1")
 
     def test_interactive_redraw_is_throttled(self):
         picker = voronoi_picker.Picker.__new__(voronoi_picker.Picker)
         picker.root = FakeRoot()
+        picker._closing = False
         picker._redraw_pending = False
         picker._redraw_after_id = None
 
@@ -105,6 +113,22 @@ class VoronoiPickerFileTests(unittest.TestCase):
             picker.root.timed_callbacks,
             [(voronoi_picker._INTERACTIVE_REDRAW_MS, picker.redraw)],
         )
+
+    def test_finish_cancels_pending_redraw(self):
+        picker = voronoi_picker.Picker.__new__(voronoi_picker.Picker)
+        picker.root = FakeRoot()
+        picker.root.quit = lambda: None
+        picker._closing = False
+        picker._redraw_pending = False
+        picker._redraw_after_id = None
+
+        picker.request_redraw(interactive=True)
+        picker.finish()
+
+        self.assertTrue(picker._closing)
+        self.assertFalse(picker._redraw_pending)
+        self.assertIsNone(picker._redraw_after_id)
+        self.assertEqual(picker.root.canceled_callbacks, ["after-1"])
 
     def test_unit_square_clip_preserves_inside_polygon(self):
         polygon = np.asarray([

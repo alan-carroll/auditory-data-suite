@@ -1,9 +1,14 @@
 import logging
 
-from logging_utils import configure_file_logging, install_excepthooks
+from logging_utils import (
+    configure_file_logging,
+    install_excepthooks,
+    install_tkinter_cleanup_guard,
+)
 
 configure_file_logging("check_after_crash.log", level=logging.ERROR)
 install_excepthooks()
+install_tkinter_cleanup_guard()
 
 import os
 import sys

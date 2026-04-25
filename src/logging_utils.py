@@ -52,3 +52,30 @@ def install_excepthooks(logger=None):
 
     sys.excepthook = _handle
     threading.excepthook = _thread_handle
+
+
+def install_tkinter_cleanup_guard():
+    """Suppress noisy Tk image finalizer errors after GUI shutdown."""
+    try:
+        import tkinter as tk
+    except ImportError:
+        return
+
+    original_del = getattr(tk.Image, "__del__", None)
+    if original_del is None or getattr(original_del, "_ads_guarded", False):
+        return
+
+    def _guarded_del(self):
+        try:
+            original_del(self)
+        except RuntimeError as exc:
+            message = str(exc)
+            if (
+                    "main thread is not in main loop" in message
+                    or "application has been destroyed" in message):
+                return
+            raise
+
+    _guarded_del._ads_guarded = True
+    _guarded_del._ads_original = original_del
+    tk.Image.__del__ = _guarded_del
