@@ -19,6 +19,7 @@ __all__ = [
 _FILENAME_PATTERNS = {
     "src": [
         (r"[0-9]{3}(?=\.src)",   r"(?<=#)[0-9]{3}"),
+        (r"[0-9]{1,3}(?=\.src)", r"(?<=#)[0-9]{3}"),
         (r"[0-9]{1,3}(?=\.src)", r"[0-9]{3}(?=e)"),
         (r"[0-9]{1,3}(?=\.src)", r"(?<=_)[0-9]{3}"),
     ],
@@ -35,8 +36,6 @@ def _parse_filename(filename):
     Match `filename` against the known Brainware filenaming conventions.
     Returns (electrode_int, penetration_int). Raises ValueError if the
     extension is unrecognized or no pattern pair matches.
-    TODO NB example in CLI project prompts, "bb_noise_train#001G1_7.src",
-    doens't match here -- fix it!
     """
     ext = filename[-3:]
     if ext not in _FILENAME_PATTERNS:
@@ -56,6 +55,7 @@ def get_map_number(filename):
     Penetration and electrode -> flat map number, parsed from a Brainware
     filename. Some known conventions:
     - DenseTC_..._JRAC#001G_RZ5-1_007.src
+    - bb_noise_train#001G1_7.src
     - foo_001e1.src
     - foo_001_1.src
     - naive2dense_001e1.f32

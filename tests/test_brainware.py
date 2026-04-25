@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from neo.io.brainwaresrcio import BrainwareSrcIO
 
+from brainware import get_map_number, get_penetration_number
 from brainware import get_spike_dict, prettify_spike_dict
 
 
@@ -16,6 +17,12 @@ def _fake_spiketrain(times):
 
 
 class BrainwareParsingTests(unittest.TestCase):
+    def test_noiseburst_src_filename_parses_penetration_and_electrode(self):
+        filename = "bb_noise_train#001G1_7.src"
+
+        self.assertEqual(get_penetration_number(filename), 1)
+        self.assertEqual(get_map_number(filename), 1)
+
     def test_get_spike_dict_falls_back_to_non_unassigned_group_spikes(self):
         blk = SimpleNamespace(
             file_origin="demo.src",
