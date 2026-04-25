@@ -67,3 +67,11 @@ py-modules = [
 
 [tool.setuptools.data-files]
 resources = ["resources/OCR-A.otf"]
+demo = [
+  "demo/demo_config.json",
+  "demo/tones_list.csv",
+  "demo/voronoi_picker_demo.py",
+]
+"demo/data" = ["demo/data/*.src"]
+"demo/img" = ["demo/img/*"]
+"demo/output" = ["demo/output/analyzed_demo.json"]
