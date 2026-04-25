@@ -7,28 +7,66 @@ CLI and GUI tools for analyzing auditory neural tuning curves plus the map data 
 
 ## Setup
 
-Should support Python versions 3.10 through 3.12 (and potentially 3.13 and 3.14 as well).
+Recommended Python version is 3.12. The project should also support Python versions 3.10 and 3.11, with test coverage for 3.13 and 3.14.
 
-- Clone the repo, create a new Python environment, and run from the checkout.
-- `pip install -e .` inside that environment to install dependencies.
+### Install a release wheel
 
-### Using virtual environments
+Use this path if you just want to run a released version of the program. The wheel installs the `map-analysis` command and pulls Python dependencies into the active environment.
 
-Recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment. From the cloned dir root:
+Recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment:
 
 ```bash
+# Create new virtual environment
 uv python install 3.12
 uv venv --python 3.12
+
+# Activate the new virtual environment:
+# On Windows
+.venv\Scripts\activate
+# On unix
 source .venv/bin/activate
-uv pip install -e .
+
+# Install wheel
+uv pip install https://github.com/alan-carroll/auditory-data-suite/releases/download/v2.0.0/auditory_data_suite-2.0.0-py3-none-any.whl
+
+# Run program
+map-analysis
 ```
 
-If you already have Python `3.10+` installed and don't want another tool involved, it's still recommended to use a virtual env:
+If you already have Python 3.12 installed and don't want another tool involved, follow the same steps using a standard virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install https://github.com/alan-carroll/auditory-data-suite/releases/download/v2.0.0/auditory_data_suite-2.0.0-py3-none-any.whl
+map-analysis
+```
+
+### Development install from source
+
+Use this path if you want to edit the code or run directly from a checkout:
+
+```bash
+git clone https://github.com/alan-carroll/auditory-data-suite.git
+cd auditory-data-suite
+uv python install 3.12
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e .
+map-analysis
+# Or, from repo root, point at source
+python src/map_analysis.py
+```
+
+or:
+
+```bash
+git clone https://github.com/alan-carroll/auditory-data-suite.git
+cd auditory-data-suite
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
+map-analysis
 ```
 
 ### OCR resources
@@ -46,14 +84,10 @@ There are many alternative JSON viewers. I like Dadroit.
 
 ## Running the program
 
-From the cloned dir (or just with the virtual env activated a la `source .venv/bin/activate`), run either of the commands below:
+With the virtual environment activated (a la `source .venv/bin/activate` or `.venv\Scripts\activate`), run:
 
 ```bash
-# if you did `pip install -e .`
 map-analysis
-
-# or just direct python to the main entry point
-python src/map_analysis.py
 ```
 
 And you'll be greeted by a CLI menu like this:
