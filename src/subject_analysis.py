@@ -681,7 +681,7 @@ def run_brainware_analysis(run_ctx, map_data=None):
     db = run_ctx.db
 
     cli.info(
-        "Select dir containing all Brainware files for subject"
+        "Select dir containing all Brainware files for subject "
         "(subfolders will be skipped):"
     )
     dir_path = afunc.get_folder(title="Select Brainware data dir")
