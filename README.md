@@ -12,9 +12,9 @@ Should support Python versions 3.10 through 3.12 (and potentially 3.13 and 3.14 
 - Clone the repo, create a new Python environment, and run from the checkout.
 - `pip install -e .` inside that environment to install dependencies.
 
-### Recommended install
+### Using virtual environments
 
-The current recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment. From the cloned dir root:
+Recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment. From the cloned dir root:
 
 ```bash
 uv python install 3.12
@@ -22,8 +22,6 @@ uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e .
 ```
-
-### Standard-library fallback
 
 If you already have Python `3.10+` installed and don't want another tool involved, it's still recommended to use a virtual env:
 
@@ -39,7 +37,7 @@ Derivation of map electrode numbers and their coordinates from images uses a bui
 
 - The bundled fallback font lives at `resources/OCR-A.otf`.
 - If `resources/digit_templates.npz` exists, that template set is preferred over the font.
-- During analysis or preview, you can also browse to any `.npz`, `.ttf`, or `.otf` OCR template source manually.
+- During analysis or OCR template preview, you can also browse to any `.npz`, `.ttf`, or `.otf` OCR template source manually.
 
 ### (optional) Dadroit JSON viewer
 https://dadroit.com/download Simple tool to view JSON files as a tree structure like a file explorer. Helps to investigate any potential issues in the JSON database files -- these are typically too large to open (or at least open comfortably) in normal text editor programs.
@@ -70,10 +68,10 @@ At the CLI, choose `o`.
 
 Available actions:
 
-- `b` bootstraps a new OCR template set from a numbers image plus matching mask image (useful if using a font unavailable as a standalone font file for some reason).
+- `b` bootstraps a new OCR template set from a numbers image plus matching mask image (useful if using a font unavailable as a standalone font file for some reason). Bootstrap output can go either to the default path `resources/digit_templates.npz` or to another `.npz` file of your choice.
 - `p` previews an OCR source before analysis (saved `.npz` template, or `.otf`/`.ttf` font file).
 
-Bootstrap output can go either to the default path `resources/digit_templates.npz` or to another `.npz` file of your choice.
+![OCR preview](resources/img/ocr_preview.png)
 
 ### New project configuration
 
@@ -92,7 +90,7 @@ At the CLI, choose `a` after loading a project configuration to run auto-analysi
 What the workflow expects:
 
 - Neural data files in `.src` or `.f32` BrainWare format.
-- Electrode coordinate data from images, a lab-style final file, or a `.csv`.
+- Electrode coordinate data from images, a lab-style final file, or a `.csv` (or a depths `.csv` if analyzing an IC map).
 - Optional OCR source selection if image-based coordinates are used.
 
 The image-based coordinate flow uses three grayscale `.png` images:
@@ -122,15 +120,15 @@ For the included demo, use:
 - `demo/img/demo_num.png`
 - `demo/data/`
 
-### Voronoi tessellation and boundary editing
+### Voronoi tessellation and boundary editing GUI
 
-In auditory cortical maps, each point on the cortical surface is assumed to have the characteristics of the closest sampled penetration. A voronoi tessellation is generated from the map electrode x/y data. To prevent outer edges extending to infinity, an initial set of border points is automatically generated around the perimeter of the map (and their corresponding polygons ignored):
+In auditory cortical maps, each point on the cortical surface is assumed to have the characteristics of the closest sampled penetration. A voronoi tessellation is generated from the map electrode x/y data. To prevent outer edges extending to infinity, an initial set of border points is automatically generated around the perimeter of the map (and their corresponding polygons ignored:
 
 ![Initial set of automatic border points around voronoi tessellation](resources/img/demo_prevor.png)
 
 In most real datasets you will still want to add or trim a few border points manually to keep the outer polygons reasonably shaped.
 
-**Controls:**
+**Voronoi Picker GUI Controls:**
 - Interaction menu / toolbar: switch between Add, Move, Delete, and Pan modes
 - A / M / D / P: keyboard shortcuts for those interaction modes
 - Move and Delete modes: hover near a buffer point to target it with a ring
@@ -138,7 +136,9 @@ In most real datasets you will still want to add or trim a few border points man
 - Mouse wheel or View menu: zoom; Pan mode drags the view
 - Export or Accept and Export: save reusable buffer-point CSV files
 - Load: bring a saved buffer-point CSV back into the picker
-- Esc / Accept / Close window: accept border points
+- Esc / Accept / Close window: accept border points (no export)
+
+Here's the same map with a little manual refinement on the border edges:
 
 ![Voronoi tessellation after manually adding more border points](resources/img/demo_postvor.png)
 
@@ -164,7 +164,6 @@ DenseTC analysis is the main automated path. Speech and noiseburst definitions e
 ### Generate analysis from a final file
 
 At the CLI, choose `g`.
-
 This is the lab-specific path for generating a subject analysis database from an existing final-file based `.xlsx` spreadsheet.
 
 ### Final-file export
@@ -184,12 +183,9 @@ The GUI is used to manually inspect and edit DenseTC analyses, assign cortical f
 
 GUI notes:
 
-- Loading a map can take a while.
-- Saving can take a while.
 - Rendering "smooth TCs" can take a while the first time (subsequent renders use cached TC)
-- There is currently no autosave.
-- You will see `*** Ready! ***` in the terminal when plot generation finishes.
-- It may be necessary to zoom out with the mouse wheel when a map first opens.
+- Unsaved GUI edits are backed up to a sidecar `.autosave` file next to
+  the subject database and can be recovered on the next load.
 
 ## GUI overview
 
