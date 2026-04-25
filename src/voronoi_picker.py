@@ -21,7 +21,6 @@ from typing import Iterable, Optional
 
 import numpy as np
 from scipy.spatial import QhullError, Voronoi
-from shapely.geometry import Polygon, box
 
 from dialogs import get_file, save_file
 
@@ -34,10 +33,10 @@ _HOVER_RING = "#1b74e4"
 _DELETE_RING = "#d93025"
 _CELL_OUTLINE = "#6b6b6b"
 _PANEL_BG = "#f7f7f7"
-_VIEW_BOUNDS = box(0.0, 0.0, 1.0, 1.0)
 _POINT_EPS = 1e-9
 _HIT_RADIUS_PX = 18
 _MIN_VIEW_SPAN = 0.05
+_INTERACTIVE_REDRAW_MS = 16
 
 _ADD = "add"
 _MOVE = "move"
@@ -218,6 +217,94 @@ def _voronoi_finite_polygons_2d(vor: Voronoi, radius: Optional[float] = None):
     return new_regions, np.asarray(new_vertices)
 
 
+def _dedupe_polygon_vertices(points: list[list[float]]) -> list[list[float]]:
+    if len(points) < 2:
+        return points
+
+    deduped = [points[0]]
+    for point in points[1:]:
+        if (abs(point[0] - deduped[-1][0]) > _POINT_EPS or
+                abs(point[1] - deduped[-1][1]) > _POINT_EPS):
+            deduped.append(point)
+
+    if (len(deduped) > 1 and
+            abs(deduped[0][0] - deduped[-1][0]) <= _POINT_EPS and
+            abs(deduped[0][1] - deduped[-1][1]) <= _POINT_EPS):
+        deduped.pop()
+
+    return deduped
+
+
+def _clip_polygon_axis(
+        points: list[list[float]],
+        axis: int,
+        limit: float,
+        keep_greater: bool) -> list[list[float]]:
+    if not points:
+        return []
+
+    def inside(point):
+        value = point[axis]
+        if keep_greater:
+            return value >= limit - _POINT_EPS
+        return value <= limit + _POINT_EPS
+
+    def intersection(start, end):
+        denominator = end[axis] - start[axis]
+        if abs(denominator) <= _POINT_EPS:
+            return [float(start[0]), float(start[1])]
+
+        t = (limit - start[axis]) / denominator
+        other_axis = 1 - axis
+        result = [0.0, 0.0]
+        result[axis] = float(limit)
+        result[other_axis] = float(
+            start[other_axis] + t * (end[other_axis] - start[other_axis]),
+        )
+        return result
+
+    output = []
+    start = points[-1]
+    start_inside = inside(start)
+
+    for end in points:
+        end_inside = inside(end)
+        if end_inside:
+            if not start_inside:
+                output.append(intersection(start, end))
+            output.append([float(end[0]), float(end[1])])
+        elif start_inside:
+            output.append(intersection(start, end))
+        start = end
+        start_inside = end_inside
+
+    return _dedupe_polygon_vertices(output)
+
+
+def _clip_polygon_to_unit_square(points: np.ndarray) -> np.ndarray:
+    """Clip an ordered convex polygon to the unit square."""
+    if len(points) < 3:
+        return np.empty((0, 2), dtype=np.float64)
+
+    clipped = points.astype(np.float64, copy=False).tolist()
+    for axis, limit, keep_greater in (
+            (0, 0.0, True),
+            (0, 1.0, False),
+            (1, 0.0, True),
+            (1, 1.0, False)):
+        clipped = _clip_polygon_axis(clipped, axis, limit, keep_greater)
+        if len(clipped) < 3:
+            return np.empty((0, 2), dtype=np.float64)
+
+    polygon = np.asarray(clipped, dtype=np.float64)
+    area = 0.5 * abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], -1)) -
+                     np.dot(polygon[:, 1], np.roll(polygon[:, 0], -1)))
+    if area <= _POINT_EPS:
+        return np.empty((0, 2), dtype=np.float64)
+
+    return np.clip(polygon, 0.0, 1.0)
+
+
 def _clipped_voronoi_polygons(points: np.ndarray) -> list[np.ndarray]:
     """Return Voronoi cell polygons clipped to the unit square."""
     if len(points) < 2:
@@ -236,18 +323,7 @@ def _clipped_voronoi_polygons(points: np.ndarray) -> list[np.ndarray]:
             polygons.append(np.empty((0, 2), dtype=np.float64))
             continue
 
-        polygon = Polygon(vertices[region]).intersection(_VIEW_BOUNDS)
-        if polygon.is_empty:
-            polygons.append(np.empty((0, 2), dtype=np.float64))
-            continue
-
-        if polygon.geom_type == "MultiPolygon":
-            polygon = max(polygon.geoms, key=lambda geom: geom.area)
-        elif polygon.geom_type != "Polygon":
-            polygons.append(np.empty((0, 2), dtype=np.float64))
-            continue
-
-        polygons.append(np.asarray(polygon.exterior.coords[:-1], dtype=np.float64))
+        polygons.append(_clip_polygon_to_unit_square(vertices[region]))
 
     return polygons
 
@@ -280,6 +356,9 @@ class Picker:
         self.drag_view: Optional[tuple[float, float, float, float]] = None
         self._move_history_pushed = False
         self._redraw_pending = False
+        self._redraw_after_id: Optional[str] = None
+        self._polygon_cache_key: Optional[tuple[tuple[int, int], bytes]] = None
+        self._polygon_cache: list[np.ndarray] = []
         self._last_canvas_size: Optional[tuple[int, int]] = None
         self._undo_stack: list[np.ndarray] = []
         self._redo_stack: list[np.ndarray] = []
@@ -490,7 +569,7 @@ class Picker:
         self.preview_point = self._event_to_point(event)
         self._refresh_hover()
         self._update_status()
-        self.request_redraw()
+        self.request_redraw(interactive=True)
 
     def on_left_press(self, event):
         mode = self.mode.get()
@@ -527,10 +606,10 @@ class Picker:
             self.buffer_points[self.drag_index] = self._event_to_point(event)
             self.hover_index = self.drag_index
             self.hover_distance_px = 0.0
-            self.request_redraw()
+            self.request_redraw(interactive=True)
         elif mode == _PAN and self.drag_start and self.drag_view:
             self._pan_to_event(event)
-            self.request_redraw()
+            self.request_redraw(interactive=True)
 
     def on_left_release(self, _event):
         self.drag_index = None
@@ -763,11 +842,16 @@ class Picker:
         return width, height
 
     def _canvas_coords(self, points: np.ndarray) -> list[float]:
-        flat_coords = []
-        for point in points:
-            x, y = self._point_to_canvas(point)
-            flat_coords.extend([x, y])
-        return flat_coords
+        if not len(points):
+            return []
+
+        width, height = self._canvas_size()
+        coords = np.empty_like(points, dtype=np.float64)
+        coords[:, 0] = ((points[:, 0] - self.view_xmin) /
+                        (self.view_xmax - self.view_xmin)) * width
+        coords[:, 1] = ((self.view_ymax - points[:, 1]) /
+                        (self.view_ymax - self.view_ymin)) * height
+        return coords.ravel().tolist()
 
     def _point_to_canvas(self, point: np.ndarray) -> tuple[float, float]:
         width, height = self._canvas_size()
@@ -783,11 +867,16 @@ class Picker:
         if not len(self.buffer_points):
             return None, None
 
-        px, py = self._point_to_canvas(point)
-        distances = []
-        for buffer_point in self.buffer_points:
-            bx, by = self._point_to_canvas(buffer_point)
-            distances.append(np.hypot(px - bx, py - by))
+        width, height = self._canvas_size()
+        px = ((float(point[0]) - self.view_xmin) /
+              (self.view_xmax - self.view_xmin)) * width
+        py = ((self.view_ymax - float(point[1])) /
+              (self.view_ymax - self.view_ymin)) * height
+        bx = ((self.buffer_points[:, 0] - self.view_xmin) /
+              (self.view_xmax - self.view_xmin)) * width
+        by = ((self.view_ymax - self.buffer_points[:, 1]) /
+              (self.view_ymax - self.view_ymin)) * height
+        distances = np.hypot(px - bx, py - by)
 
         index = int(np.argmin(distances))
         distance = float(distances[index])
@@ -830,21 +919,29 @@ class Picker:
         parts.append("A/M/D/P modes, Ctrl+Z undo, Ctrl+Shift+Z redo")
         self.status_text.set("   |   ".join(parts))
 
-    def request_redraw(self):
+    def request_redraw(self, interactive: bool = False):
         if self._redraw_pending:
             return
 
         self._redraw_pending = True
-        self.root.after_idle(self.redraw)
+        if interactive:
+            self._redraw_after_id = self.root.after(
+                _INTERACTIVE_REDRAW_MS,
+                self.redraw,
+            )
+        else:
+            self._redraw_after_id = None
+            self.root.after_idle(self.redraw)
 
     def redraw(self):
         self._redraw_pending = False
+        self._redraw_after_id = None
         has_preview = self.mode.get() == _ADD and self._preview_is_new()
         all_point_parts = [self.input_points, self.buffer_points]
         if has_preview:
             all_point_parts.append(np.atleast_2d(self.preview_point))
         all_points = np.vstack(all_point_parts)
-        polygons = _clipped_voronoi_polygons(all_points)
+        polygons = self._cached_polygons(all_points)
         colors = _cell_colors(
             real_count=len(self.input_points),
             buffer_count=len(self.buffer_points),
@@ -884,6 +981,14 @@ class Picker:
             self._draw_point(self.preview_point, fill=_PREVIEW_POINT, radius=5)
 
         self._draw_overlay()
+
+    def _cached_polygons(self, points: np.ndarray) -> list[np.ndarray]:
+        points = np.ascontiguousarray(points, dtype=np.float64)
+        key = (points.shape, points.tobytes())
+        if key != self._polygon_cache_key:
+            self._polygon_cache_key = key
+            self._polygon_cache = _clipped_voronoi_polygons(points)
+        return self._polygon_cache
 
     def _draw_unit_bounds(self):
         self.canvas.create_rectangle(
