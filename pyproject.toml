@@ -61,3 +61,6 @@ py-modules = [
   "tc_analysis",
   "voronoi_picker",
 ]
+
+[tool.setuptools.data-files]
+resources = ["resources/OCR-A.otf"]
