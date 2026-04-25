@@ -12,9 +12,9 @@ Should support Python versions 3.10 through 3.12 (and potentially 3.13 and 3.14 
 - Clone the repo, create a new Python environment, and run from the checkout.
 - `pip install -e .` inside that environment to install dependencies.
 
-### Recommended install
+### Using virtual environments
 
-The current recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment. From the cloned dir root:
+Recommended path is [uv](https://github.com/astral-sh/uv), since it can manage both Python and the project environment. From the cloned dir root:
 
 ```bash
 uv python install 3.12
@@ -22,8 +22,6 @@ uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e .
 ```
-
-### Standard-library fallback
 
 If you already have Python `3.10+` installed and don't want another tool involved, it's still recommended to use a virtual env:
 
@@ -39,7 +37,7 @@ Derivation of map electrode numbers and their coordinates from images uses a bui
 
 - The bundled fallback font lives at `resources/OCR-A.otf`.
 - If `resources/digit_templates.npz` exists, that template set is preferred over the font.
-- During analysis or preview, you can also browse to any `.npz`, `.ttf`, or `.otf` OCR template source manually.
+- During analysis or OCR template preview, you can also browse to any `.npz`, `.ttf`, or `.otf` OCR template source manually.
 
 ### (optional) Dadroit JSON viewer
 https://dadroit.com/download Simple tool to view JSON files as a tree structure like a file explorer. Helps to investigate any potential issues in the JSON database files -- these are typically too large to open (or at least open comfortably) in normal text editor programs.
