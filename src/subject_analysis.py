@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import multiprocessing
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from dataclasses import dataclass
@@ -26,9 +27,29 @@ from stim_types import STIM_BY_KEY, enabled_stim_types
 
 from digit_ocr import DigitOCR
 
-RESOURCES = Path(__file__).resolve().parent.parent / "resources"
-TEMPLATE_FILE = RESOURCES / "digit_templates.npz"
-FONT_FILE = RESOURCES / "OCR-A.otf"
+SOURCE_RESOURCES = Path(__file__).resolve().parent.parent / "resources"
+INSTALLED_RESOURCES = Path(sys.prefix) / "resources"
+RESOURCE_DIRS = (SOURCE_RESOURCES, INSTALLED_RESOURCES)
+RESOURCES = next(
+    (resource_dir for resource_dir in RESOURCE_DIRS if resource_dir.exists()),
+    SOURCE_RESOURCES,
+)
+TEMPLATE_FILE = next(
+    (
+        resource_dir / "digit_templates.npz"
+        for resource_dir in RESOURCE_DIRS
+        if (resource_dir / "digit_templates.npz").exists()
+    ),
+    RESOURCES / "digit_templates.npz",
+)
+FONT_FILE = next(
+    (
+        resource_dir / "OCR-A.otf"
+        for resource_dir in RESOURCE_DIRS
+        if (resource_dir / "OCR-A.otf").exists()
+    ),
+    RESOURCES / "OCR-A.otf",
+)
 FONT_EXTENSIONS = (".ttf", ".otf")
 
 
